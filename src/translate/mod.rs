@@ -1,15 +1,17 @@
+use typeck::{Scope, TypeChecker, TypeDeduction, TypeInstance};
+
 use crate::syntax::{
     expr::{BinaryOperation, Block, BlockExpression, Expression, NonblockExpression},
     format::FormatFragment,
     item::Type,
+    literal::Literal,
     path::{Identifier, Path},
     stmt::{Pattern, Statement},
     Program,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::{cell::RefCell, collections::HashSet, fmt::Write, rc::Rc};
+
+pub mod typeck;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDefinition {
@@ -25,21 +27,15 @@ pub enum TypeConstruction {
 }
 
 pub struct Translator {
-    var: HashMap<Identifier, Vec<Variable>>,
-    ty: HashMap<Identifier, Vec<TypeDefinition>>,
-    counter: usize,
-}
-
-#[derive(Debug, Clone)]
-struct Variable {
-    name: Identifier,
-    ty: TypeDefinition,
-    mapped: String,
+    scopes: Vec<Rc<RefCell<Scope>>>,
+    expr_types: Vec<TypeDeduction>,
+    current: usize,
+    current_expr: usize,
 }
 
 #[derive(Debug)]
 pub struct Intermediate {
-    ty: TypeDefinition,
+    ty: TypeInstance,
     feature: HashSet<&'static str>,
     decl: String,
     global: String,
@@ -48,109 +44,107 @@ pub struct Intermediate {
 }
 
 impl Translator {
-    fn push_type(&mut self, definition: TypeDefinition) {
-        self.ty
-            .entry(definition.name.clone())
-            .or_default()
-            .push(definition);
+    pub fn current_scope(&self) -> Rc<RefCell<Scope>> {
+        Rc::clone(&self.scopes[self.current])
     }
 
-    fn push_var(&mut self, variable: Variable) {
-        self.var
-            .entry(variable.name.clone())
-            .or_default()
-            .push(variable);
-    }
-
-    fn pop_var(&mut self, name: &Identifier) {
-        let Some(v) = self.var.get_mut(name) else {
-            unreachable!("Pop undefined {name}");
-        };
-        v.pop();
-        if v.is_empty() {
-            self.var.remove(name);
-        }
+    pub fn current_expr_type(&self) -> &TypeDeduction {
+        &self.expr_types[self.current_expr]
     }
 
     pub fn path(&mut self, path: &Path) -> Intermediate {
-        match path {
+        let scope = self.current_scope();
+        let result = match path {
             Path::Simple(ident) => {
-                let Some(symbol) = self.var.get(ident).and_then(|v| v.last()) else {
-                    panic!("Could not find name {ident} in scope.");
+                let scope = scope.borrow();
+                let var = scope.get_var(ident).unwrap();
+                let Some(ty) = self.current_expr_type().deduce() else {
+                    panic!("Could not deduce type of {ident}.");
                 };
                 Intermediate {
                     feature: Default::default(),
                     decl: "".into(),
                     global: "".into(),
-                    ty: symbol.ty.clone(),
+                    ty,
                     effect: "".into(),
-                    immediate: symbol.mapped.clone(),
+                    immediate: format!("({})", var.mangle.clone()),
                 }
             }
-        }
+        };
+        self.current_expr += 1;
+        result
     }
 
     pub fn binary(&mut self, binary: &BinaryOperation) -> Intermediate {
         let lhs = self.expression(&binary.lhs);
         let rhs = self.expression(&binary.rhs);
-        match (lhs.ty.name.as_str(), binary.operator, rhs.ty.name.as_str()) {
-            ("i32", op @ _, "i32") => Intermediate {
-                ty: lhs.ty.clone(),
+        let Some(ty) = self.current_expr_type().deduce() else {
+            panic!("Could not deduce type.");
+        };
+        let result = match (lhs.ty, binary.operator, rhs.ty) {
+            (TypeInstance::I32, op @ _, TypeInstance::I32) => Intermediate {
+                ty,
                 feature: lhs.feature.union(&rhs.feature).copied().collect(),
                 decl: lhs.decl + &rhs.decl,
                 global: lhs.global + &rhs.global,
                 effect: lhs.effect + &rhs.effect,
-                immediate: format!("({}) {op} ({})", lhs.immediate, rhs.immediate),
+                immediate: format!("({} {op} {})", lhs.immediate, rhs.immediate),
             },
             (l, op, r) => panic!("Unsupported operation `{l}` {op} `{r}`",),
-        }
+        };
+        self.current_expr += 1;
+        result
+    }
+
+    pub fn literal(&mut self, literal: &Literal) -> Intermediate {
+        let Some(ty) = self.current_expr_type().deduce() else {
+            panic!("Could not deduce type.");
+        };
+        let result = match literal {
+            Literal::Decimal(decimal) => Intermediate {
+                ty,
+                feature: Default::default(),
+                decl: "".into(),
+                global: "".into(),
+                effect: "".into(),
+                immediate: decimal.0.clone(),
+            },
+        };
+        self.current_expr += 1;
+        result
     }
 
     pub fn block(&mut self, block: &Block) -> Intermediate {
-        let mut stack = vec![];
-        let mut ty = TypeDefinition {
-            name: "()".into(),
-            mapped: "void".into(),
-            construction: TypeConstruction::Path("()".into()),
-        };
+        let result = self.current;
+        self.current += 1;
+        let mut ty = TypeInstance::Unit;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
         let mut immediate = String::new();
         for statement in block.statement.iter() {
+            self.current += 1;
             match statement {
                 Statement::Nop => {}
                 Statement::Input(parser) => {
+                    let scope = self.current_scope();
+                    let scope = scope.borrow();
                     for (ty, ident) in parser.arg.iter() {
-                        match ty {
-                            Type::Path(path) => {
-                                let Some(ty) = self.ty.get(&path.ident).and_then(|v| v.last())
-                                else {
-                                    panic!("Could not find type `{}` in scope.", path.ident);
-                                };
-                                let getter = match ty.name.as_str() {
-                                    "i32" => {
-                                        feature.insert("reader_def");
-                                        feature.insert("read_white");
-                                        feature.insert("read_i32");
-                                        "read_i32()"
-                                    }
-                                    _ => panic!("Could not find parser for type `{}`.", ty.name),
-                                };
-                                stack.push(ident.clone());
-                                let var = Variable {
-                                    name: ident.clone(),
-                                    ty: ty.clone(),
-                                    mapped: format!("{}_{}", ident, self.counter),
-                                };
-                                self.counter += 1;
-                                writeln!(effect, "{} {} = {};", ty.mapped, var.mapped, getter)
-                                    .unwrap();
-                                self.push_var(var);
+                        let Some(ty) = scope.get_ty(ty) else {
+                            panic!("Could not find type `{}` in scope.", ty);
+                        };
+                        let getter = match ty {
+                            TypeInstance::I32 => {
+                                feature.insert("reader_def");
+                                feature.insert("read_white");
+                                feature.insert("read_i32");
+                                "read_i32()"
                             }
-                            Type::Tuple(_) => todo!(),
-                        }
+                            _ => panic!("Could not find parser for type `{ty}`."),
+                        };
+                        let var = scope.get_var(ident).unwrap();
+                        writeln!(effect, "{} {} = {};", ty.mapped(), var.mangle, getter).unwrap();
                     }
                 }
                 Statement::Expression(expr) => {
@@ -175,21 +169,28 @@ impl Translator {
                                 .unwrap();
                             }
                             FormatFragment::Ident(ident) => {
-                                let Some(var) = self.var.get(ident).and_then(|v| v.last()) else {
+                                let scope = self.current_scope();
+                                let scope = scope.borrow();
+                                let Some(var) = scope.get_var(ident) else {
                                     panic!("Could not print undefined variable {ident}.");
                                 };
-                                match var.ty.name.as_str() {
-                                    "i32" => {
+                                let Some(ty) = var.ty.deduce() else {
+                                    panic!("Could not deduce type of {ident}.");
+                                };
+                                match ty {
+                                    TypeInstance::I32 => {
                                         feature.insert("write_i32");
-                                        writeln!(effect, "write_i32({});", var.mapped).unwrap();
+                                        writeln!(effect, "write_i32({});", var.mangle).unwrap();
                                     }
-                                    _ => panic!("Could not print value of type `{}`.", var.ty.name),
+                                    _ => panic!("Could not print value of type `{}`.", ty),
                                 }
                             }
                         }
                     }
                 }
                 Statement::Assignment(assignment) => {
+                    let scope = self.current_scope();
+                    let scope = scope.borrow();
                     let rhs = self.expression(&assignment.rhs);
                     feature.extend(rhs.feature);
                     decl.push_str(&rhs.decl);
@@ -197,39 +198,27 @@ impl Translator {
                     effect.push_str(&rhs.effect);
                     match &assignment.lhs {
                         Pattern::Ident(ident) => {
-                            let Some(var) = self.var.get(ident).and_then(|v| v.last()) else {
+                            let Some(var) = scope.get_var(ident) else {
                                 panic!("Could not assign to undefined variable {ident}.");
                             };
-                            if var.ty != rhs.ty {
-                                panic!(
-                                    "Expected rhs to be `{}`, found `{}`.",
-                                    var.ty.name, rhs.ty.name
-                                );
-                            }
-                            writeln!(effect, "{} = ({});", var.mapped, rhs.immediate).unwrap();
+                            writeln!(effect, "{} = {};", var.mangle, rhs.immediate).unwrap();
                         }
                         Pattern::Declaration(declaration) => match &declaration.ty {
                             Type::Path(path) => {
-                                let Some(ty) = self.ty.get(&path.ident).and_then(|v| v.last())
-                                else {
+                                let Some(ty) = scope.get_ty(&path.ident) else {
                                     panic!("Could not find type `{}` in scope.", path.ident);
                                 };
-                                let var = Variable {
-                                    name: declaration.ident.clone(),
-                                    ty: ty.clone(),
-                                    mapped: format!("{}_{}", declaration.ident, self.counter),
-                                };
-                                stack.push(var.name.clone());
-                                self.counter += 1;
+                                let var = scope.get_var(&declaration.ident).unwrap();
                                 writeln!(
                                     effect,
-                                    "{} {} = ({});",
-                                    ty.mapped, var.mapped, rhs.immediate
+                                    "{} {} = {};",
+                                    ty.mapped(),
+                                    var.mangle,
+                                    rhs.immediate
                                 )
                                 .unwrap();
-                                self.push_var(var);
                             }
-                            Type::Tuple(tuple) => todo!(),
+                            Type::Tuple(_) => todo!(),
                         },
                     }
                 }
@@ -239,13 +228,14 @@ impl Translator {
                     decl.push_str(&times.decl);
                     global.push_str(&times.global);
                     effect.push_str(&times.effect);
-                    if times.ty.name != "i32" {
-                        panic!("Could not repeat for non-integer type `{}`", times.ty.name);
+                    if times.ty != TypeInstance::I32 {
+                        panic!("Could not repeat for non-integer type `{}`", times.ty);
                     }
                     writeln!(
                         effect,
-                        "for ({} i = 0; i < ({}); ++i) {{",
-                        times.ty.mapped, times.immediate
+                        "for ({} i = 0; i < {}; ++i) {{",
+                        times.ty.mapped(),
+                        times.immediate
                     )
                     .unwrap();
                     let block = self.block(&repeat.block);
@@ -265,9 +255,8 @@ impl Translator {
             effect.push_str(&result.effect);
             immediate = result.immediate;
         }
-        for ident in stack {
-            self.pop_var(&ident);
-        }
+        self.current = result;
+        self.current_expr += 1;
         Intermediate {
             ty,
             feature,
@@ -286,22 +275,20 @@ impl Translator {
             Expression::Nonblock(nonblock) => match nonblock {
                 NonblockExpression::Path(path) => self.path(path),
                 NonblockExpression::Binary(binary) => self.binary(binary),
+                NonblockExpression::Literal(literal) => self.literal(literal),
             },
         }
     }
 
     pub fn translate(program: &Program) -> String {
-        let mut translator = Translator {
-            var: Default::default(),
-            ty: Default::default(),
-            counter: 0,
-        };
+        let type_checker = TypeChecker::run(program);
 
-        translator.push_type(TypeDefinition {
-            name: "i32".into(),
-            mapped: "int32_t".into(),
-            construction: TypeConstruction::Path("i32".into()),
-        });
+        let mut translator = Translator {
+            scopes: type_checker.scopes,
+            expr_types: type_checker.expr_types,
+            current: 0,
+            current_expr: 0,
+        };
 
         let intermediate = translator.block(&Block {
             statement: program.statement.clone(),

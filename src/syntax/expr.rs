@@ -1,12 +1,13 @@
 use winnow::{
     ascii::multispace0,
-    combinator::{alt, opt, preceded, repeat},
+    combinator::{alt, cut_err, opt, preceded, repeat},
     seq,
     token::one_of,
     PResult, Parser,
 };
 
 use super::{
+    literal::{parse_literal, Literal},
     path::{parse_path, Path},
     stmt::{parse_statment, Statement},
 };
@@ -19,6 +20,7 @@ pub enum Expression {
 
 #[derive(Debug, Clone)]
 pub enum NonblockExpression {
+    Literal(Literal),
     Path(Path),
     Binary(BinaryOperation),
 }
@@ -28,6 +30,7 @@ pub fn parse_nonblock_expression<'s>(input: &mut &'s str) -> PResult<NonblockExp
         parse_add_sub.map(NonblockExpression::Binary),
         parse_mul_div_mod.map(NonblockExpression::Binary),
         parse_path.map(NonblockExpression::Path),
+        parse_literal.map(NonblockExpression::Literal),
     ))
     .parse_next(input)
 }
@@ -119,6 +122,9 @@ pub fn parse_mul_div_mod<'s>(input: &mut &'s str) -> PResult<BinaryOperation> {
 
 pub fn parse_term<'s>(input: &mut &'s str) -> PResult<Expression> {
     alt((
+        parse_literal
+            .map(NonblockExpression::Literal)
+            .map(Expression::Nonblock),
         parse_path
             .map(NonblockExpression::Path)
             .map(Expression::Nonblock),

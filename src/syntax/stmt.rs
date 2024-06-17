@@ -107,7 +107,7 @@ pub fn parse_repeat<'s>(input: &mut &'s str) -> PResult<Repeat> {
 
 #[derive(Debug, Clone)]
 pub struct InputParser {
-    pub arg: Vec<(Type, Identifier)>,
+    pub arg: Vec<(Identifier, Identifier)>,
 }
 
 pub fn parse_input_parser<'s>(input: &mut &'s str) -> PResult<InputParser> {
@@ -120,6 +120,6 @@ pub fn parse_input_parser<'s>(input: &mut &'s str) -> PResult<InputParser> {
     .parse_next(input)
 }
 
-pub fn parse_input_arg<'s>(input: &mut &'s str) -> PResult<(Type, Identifier)> {
-    separated_pair(parse_type, multispace1, parse_ident).parse_next(input)
+pub fn parse_input_arg<'s>(input: &mut &'s str) -> PResult<(Identifier, Identifier)> {
+    separated_pair(parse_ident, multispace1, parse_ident).parse_next(input)
 }

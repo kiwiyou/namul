@@ -6,7 +6,7 @@ use winnow::{
 
 use super::path::{parse_ident, Identifier};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypePath {
     pub ident: Identifier,
 }
@@ -17,7 +17,7 @@ pub fn parse_type_path<'s>(input: &mut &'s str) -> PResult<TypePath> {
         .parse_next(input)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Path(TypePath),
     Tuple(Vec<Self>),

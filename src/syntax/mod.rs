@@ -10,6 +10,7 @@ pub mod format;
 pub mod item;
 pub mod path;
 pub mod stmt;
+pub mod literal;
 
 #[derive(Debug, Clone)]
 pub struct Program {
