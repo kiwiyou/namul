@@ -1,7 +1,6 @@
 use winnow::{
-    ascii::{multispace0, multispace1},
     combinator::{alt, delimited, opt, preceded, separated, separated_pair, terminated},
-    seq, PResult, Parser,
+    seq, Located, PResult, Parser,
 };
 
 use crate::syntax::expr::parse_expression;
@@ -10,7 +9,7 @@ use super::{
     expr::{parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression},
     format::{parse_format_string, FormatString},
     item::{parse_type, Type},
-    path::{parse_ident, Identifier},
+    Token, TokenKind,
 };
 
 #[derive(Debug, Clone)]
@@ -23,18 +22,33 @@ pub enum Statement {
     Repeat(Repeat),
 }
 
-pub fn parse_statment<'s>(input: &mut &'s str) -> PResult<Statement> {
+pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
     alt((
-        ';'.value(Statement::Nop),
-        terminated(parse_format_string, (multispace0, ';')).map(Statement::Print),
-        terminated(parse_input_parser, (multispace0, ';')).map(Statement::Input),
+        TokenKind::PunctSemicolon.value(Statement::Nop),
+        terminated(
+            parse_format_string,
+            (opt(TokenKind::White), TokenKind::PunctSemicolon),
+        )
+        .map(Statement::Print),
+        terminated(
+            parse_input_parser,
+            (opt(TokenKind::White), TokenKind::PunctSemicolon),
+        )
+        .map(Statement::Input),
         parse_repeat.map(Statement::Repeat),
-        terminated(parse_nonblock_expression, (multispace0, ';'))
-            .map(|nonblock| Statement::Expression(Expression::Nonblock(nonblock))),
+        terminated(
+            parse_nonblock_expression,
+            (opt(TokenKind::White), TokenKind::PunctSemicolon),
+        )
+        .map(|nonblock| Statement::Expression(Expression::Nonblock(nonblock))),
         parse_block_expression.map(|block| Statement::Expression(Expression::Block(block))),
-        terminated(parse_assignment, (multispace0, ';')).map(Statement::Assignment),
+        terminated(
+            parse_assignment,
+            (opt(TokenKind::White), TokenKind::PunctSemicolon),
+        )
+        .map(Statement::Assignment),
     ))
-    .parse_next(input)
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
@@ -43,42 +57,42 @@ pub struct Assignment {
     pub rhs: Expression,
 }
 
-pub fn parse_assignment<'s>(input: &mut &'s str) -> PResult<Assignment> {
+pub fn parse_assignment(s: &mut Located<&str>) -> PResult<Assignment> {
     seq!(
         parse_pattern,
-        _: multispace0,
-        _: '=',
-        _: multispace0,
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctEqualsSign,
+        _: opt(TokenKind::White),
         parse_expression,
     )
     .map(|(lhs, rhs)| Assignment { lhs, rhs })
-    .parse_next(input)
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
-    Ident(Identifier),
+    Ident(Token),
     Declaration(Declaration),
 }
 
-pub fn parse_pattern<'s>(input: &mut &'s str) -> PResult<Pattern> {
+pub fn parse_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
     alt((
         parse_declaration.map(Pattern::Declaration),
-        parse_ident.map(Pattern::Ident),
+        TokenKind::Identifier.map(Pattern::Ident),
     ))
-    .parse_next(input)
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
 pub struct Declaration {
     pub ty: Type,
-    pub ident: Identifier,
+    pub ident: Token,
 }
 
-pub fn parse_declaration<'s>(input: &mut &'s str) -> PResult<Declaration> {
-    separated_pair(parse_type, multispace1, parse_ident)
+pub fn parse_declaration(s: &mut Located<&str>) -> PResult<Declaration> {
+    separated_pair(parse_type, TokenKind::White, TokenKind::Identifier)
         .map(|(ty, ident)| Declaration { ty, ident })
-        .parse_next(input)
+        .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
@@ -87,12 +101,12 @@ pub struct Repeat {
     pub block: Block,
 }
 
-pub fn parse_repeat<'s>(input: &mut &'s str) -> PResult<Repeat> {
+pub fn parse_repeat(s: &mut Located<&str>) -> PResult<Repeat> {
     seq!(
-        _: "rep",
-        _: multispace1,
+        _: TokenKind::KeywordRep,
+        _: opt(TokenKind::White),
         parse_expression,
-        _: multispace1,
+        _: opt(TokenKind::White),
         alt((
             parse_block,
             parse_input_parser.map(|parser| Block { statement: vec![Statement::Input(parser)], result: None })
@@ -102,24 +116,37 @@ pub fn parse_repeat<'s>(input: &mut &'s str) -> PResult<Repeat> {
         times,
         block: expr,
     })
-    .parse_next(input)
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
 pub struct InputParser {
-    pub arg: Vec<(Identifier, Identifier)>,
+    pub arg: Vec<(Token, Token)>,
 }
 
-pub fn parse_input_parser<'s>(input: &mut &'s str) -> PResult<InputParser> {
+pub fn parse_input_parser(s: &mut Located<&str>) -> PResult<InputParser> {
     delimited(
-        '|',
-        separated(1.., preceded(multispace0, parse_input_arg), ','),
-        (opt((multispace0, ',')), multispace0, '|'),
+        TokenKind::PunctVerticalLine,
+        separated(
+            1..,
+            preceded(opt(TokenKind::White), parse_input_arg),
+            TokenKind::PunctComma,
+        ),
+        (
+            opt((opt(TokenKind::White), TokenKind::PunctComma)),
+            opt(TokenKind::White),
+            TokenKind::PunctVerticalLine,
+        ),
     )
     .map(|arg| InputParser { arg })
-    .parse_next(input)
+    .parse_next(s)
 }
 
-pub fn parse_input_arg<'s>(input: &mut &'s str) -> PResult<(Identifier, Identifier)> {
-    separated_pair(parse_ident, multispace1, parse_ident).parse_next(input)
+pub fn parse_input_arg(s: &mut Located<&str>) -> PResult<(Token, Token)> {
+    separated_pair(
+        TokenKind::Identifier,
+        TokenKind::White,
+        TokenKind::Identifier,
+    )
+    .parse_next(s)
 }

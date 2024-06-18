@@ -1,26 +1,33 @@
-use winnow::{ascii::digit1, combinator::opt, token::one_of, PResult, Parser};
+use winnow::{combinator::alt, Located, PResult, Parser};
+
+use super::{Token, TokenKind};
 
 #[derive(Debug, Clone)]
 pub enum Literal {
     Decimal(DecimalLiteral),
+    Bool(BoolLiteral),
 }
 
-pub fn parse_literal<'s>(input: &mut &'s str) -> PResult<Literal> {
-    parse_decimal_literal.map(Literal::Decimal).parse_next(input)
+pub fn parse_literal<'s>(s: &mut Located<&str>) -> PResult<Literal> {
+    alt((
+        parse_bool_literal.map(Literal::Bool),
+        parse_decimal_literal.map(Literal::Decimal),
+    ))
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
-pub struct DecimalLiteral(pub String);
+pub struct DecimalLiteral(pub Token);
 
-pub fn parse_decimal_literal<'s>(input: &mut &'s str) -> PResult<DecimalLiteral> {
-    (opt(one_of(['-', '+'])), digit1)
-        .map(|(sign, digits)| {
-            let mut literal = String::new();
-            if let Some(sign) = sign {
-                literal.push(sign);
-            }
-            literal.push_str(digits);
-            DecimalLiteral(literal)
-        })
-        .parse_next(input)
+pub fn parse_decimal_literal(s: &mut Located<&str>) -> PResult<DecimalLiteral> {
+    TokenKind::LiteralDecimal.map(DecimalLiteral).parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct BoolLiteral(pub Token);
+
+pub fn parse_bool_literal(s: &mut Located<&str>) -> PResult<BoolLiteral> {
+    alt((TokenKind::KeywordTrue, TokenKind::KeywordFalse))
+        .map(BoolLiteral)
+        .parse_next(s)
 }

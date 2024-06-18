@@ -1,5 +1,5 @@
 use translate::Translator;
-use winnow::Parser;
+use winnow::{Located, Parser};
 
 mod args;
 mod syntax;
@@ -11,7 +11,7 @@ fn main() {
         args::Args::parse()
     };
     let source_content = std::fs::read_to_string(args.source).unwrap();
-    let input = source_content.as_str();
+    let input = Located::new(source_content.as_str());
     let output = syntax::parse_program.parse(input).unwrap();
     let c = Translator::translate(&output);
     print!("{c}");

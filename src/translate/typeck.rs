@@ -4,7 +4,7 @@ use crate::syntax::{
     expr::{Block, BlockExpression, Expression, NonblockExpression},
     item::Type,
     literal::Literal,
-    path::{Identifier, Path},
+    path::Path,
     stmt::{Pattern, Statement},
     Program,
 };
@@ -12,14 +12,15 @@ use crate::syntax::{
 #[derive(Debug, Clone)]
 pub struct Scope {
     parent: Option<Rc<RefCell<Scope>>>,
-    var: HashMap<Identifier, Variable>,
-    ty: HashMap<Identifier, TypeInstance>,
+    var: HashMap<String, Variable>,
+    ty: HashMap<String, TypeInstance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeInstance {
     I32,
     Unit,
+    Bool,
 }
 
 impl Display for TypeInstance {
@@ -27,6 +28,7 @@ impl Display for TypeInstance {
         match self {
             TypeInstance::I32 => f.write_str("i32"),
             TypeInstance::Unit => f.write_str("()"),
+            TypeInstance::Bool => f.write_str("bool"),
         }
     }
 }
@@ -36,13 +38,14 @@ impl TypeInstance {
         match self {
             TypeInstance::I32 => "int32_t".into(),
             TypeInstance::Unit => "void".into(),
+            TypeInstance::Bool => "char".into(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Variable {
-    pub name: Identifier,
+    pub name: String,
     pub mangle: String,
     pub ty: TypeDeduction,
 }
@@ -89,6 +92,7 @@ impl Scope {
     pub fn root() -> Self {
         let mut ty = HashMap::new();
         ty.insert("i32".into(), TypeInstance::I32);
+        ty.insert("bool".into(), TypeInstance::Bool);
         Self {
             parent: None,
             var: Default::default(),
@@ -104,14 +108,14 @@ impl Scope {
         }
     }
 
-    pub fn get_var(&self, name: &Identifier) -> Option<Variable> {
+    pub fn get_var(&self, name: &str) -> Option<Variable> {
         if let Some(var) = self.var.get(name) {
             return Some(var.clone());
         }
         self.parent.as_ref()?.borrow().get_var(name)
     }
 
-    pub fn get_ty(&self, name: &Identifier) -> Option<TypeInstance> {
+    pub fn get_ty(&self, name: &str) -> Option<TypeInstance> {
         if let Some(ty) = self.ty.get(name) {
             return Some(ty.clone());
         }
@@ -154,10 +158,10 @@ impl NameResolver {
             Statement::Input(parser) => {
                 for (_, name) in parser.arg.iter() {
                     owned.borrow_mut().var.insert(
-                        name.clone(),
+                        name.content.clone(),
                         Variable {
-                            name: name.clone(),
-                            mangle: format!("_{name}_{}", self.counter),
+                            name: name.content.clone(),
+                            mangle: format!("_{}_{}", name.content, self.counter),
                             ty: TypeDeduction::Unknown,
                         },
                     );
@@ -172,10 +176,10 @@ impl NameResolver {
                 Pattern::Ident(_) => {}
                 Pattern::Declaration(decl) => {
                     owned.borrow_mut().var.insert(
-                        decl.ident.clone(),
+                        decl.ident.content.clone(),
                         Variable {
-                            name: decl.ident.clone(),
-                            mangle: format!("_{}_{}", decl.ident, self.counter),
+                            name: decl.ident.content.clone(),
+                            mangle: format!("_{}_{}", decl.ident.content, self.counter),
                             ty: TypeDeduction::Unknown,
                         },
                     );
@@ -207,6 +211,19 @@ impl NameResolver {
                 NonblockExpression::Binary(binary) => {
                     self.expression(parent.clone(), &binary.lhs);
                     self.expression(parent.clone(), &binary.rhs);
+                }
+                NonblockExpression::If(if_) => {
+                    self.expression(parent.clone(), &if_.condition);
+                    self.expression(parent.clone(), &if_.truthy);
+                    if let Some(falsy) = &if_.falsy {
+                        self.expression(parent.clone(), falsy);
+                    }
+                }
+                NonblockExpression::Comparison(comparison) => {
+                    self.expression(parent.clone(), &comparison.first);
+                    for (_, rest) in comparison.chain.iter() {
+                        self.expression(parent.clone(), rest);
+                    }
                 }
             },
         }
@@ -257,11 +274,11 @@ impl TypeChecker {
             Statement::Input(parser) => {
                 for (ty, name) in parser.arg.iter() {
                     let mut scope = scope.borrow_mut();
-                    let Some(ty) = scope.get_ty(ty) else {
-                        panic!("Could not find type `{ty}` in scope.");
+                    let Some(ty) = scope.get_ty(&ty.content) else {
+                        panic!("Could not find type `{}` in scope.", ty.content);
                     };
                     let constraint = TypeDeduction::Exact(ty.clone());
-                    let var = scope.var.get_mut(name).unwrap();
+                    let var = scope.var.get_mut(&name.content).unwrap();
                     var.ty.unify(constraint);
                 }
             }
@@ -276,11 +293,11 @@ impl TypeChecker {
                     Pattern::Declaration(decl) => match &decl.ty {
                         Type::Path(path) => {
                             let mut scope = scope.borrow_mut();
-                            let Some(ty) = scope.get_ty(&path.ident) else {
-                                panic!("Could not find type `{}` in scope.", path.ident);
+                            let Some(ty) = scope.get_ty(&path.ident.content) else {
+                                panic!("Could not find type `{}` in scope.", path.ident.content);
                             };
                             let constraint = TypeDeduction::Exact(ty.clone());
-                            let var = scope.var.get_mut(&decl.ident).unwrap();
+                            let var = scope.var.get_mut(&decl.ident.content).unwrap();
                             var.ty.unify(constraint);
                         }
                         Type::Tuple(_) => todo!(),
@@ -297,6 +314,8 @@ impl TypeChecker {
 
     fn expression(&mut self, expr: &Expression) -> TypeDeduction {
         let scope = Rc::clone(&self.scopes[self.current]);
+        let pos = self.expr_types.len();
+        self.expr_types.push(TypeDeduction::Unknown);
         let deduction = match expr {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => self.block(block),
@@ -304,12 +323,13 @@ impl TypeChecker {
             Expression::Nonblock(nonblock) => match nonblock {
                 NonblockExpression::Literal(literal) => match literal {
                     Literal::Decimal(_) => TypeDeduction::Integer,
+                    Literal::Bool(_) => TypeDeduction::Exact(TypeInstance::Bool),
                 },
                 NonblockExpression::Path(path) => match path {
                     Path::Simple(simple) => {
                         let scope = scope.borrow();
-                        let Some(var) = scope.get_var(simple) else {
-                            panic!("Could not find name {simple} in scope.");
+                        let Some(var) = scope.get_var(&simple.content) else {
+                            panic!("Could not find name {} in scope.", simple.content);
                         };
                         var.ty.clone()
                     }
@@ -324,13 +344,46 @@ impl TypeChecker {
                         _ => TypeDeduction::Never,
                     }
                 }
+                NonblockExpression::If(if_) => {
+                    let condition = self.expression(&if_.condition);
+                    if condition.deduce() != Some(TypeInstance::Bool) {
+                        TypeDeduction::Never
+                    } else {
+                        let truthy = self.expression(&if_.truthy);
+                        if let Some(falsy) = if_.falsy.as_ref() {
+                            let falsy = self.expression(&falsy);
+                            if matches!((truthy.deduce(), falsy.deduce()), (Some(t), Some(f)) if t == f)
+                            {
+                                truthy.clone()
+                            } else {
+                                TypeDeduction::Never
+                            }
+                        } else {
+                            TypeDeduction::Exact(TypeInstance::Unit)
+                        }
+                    }
+                }
+                NonblockExpression::Comparison(comparison) => {
+                    let mut prev = self.expression(&comparison.first);
+                    let mut result = TypeDeduction::Exact(TypeInstance::Bool);
+                    for (_, rest) in comparison.chain.iter() {
+                        let next = self.expression(rest);
+                        if !matches!((prev.deduce(), next.deduce()), (Some(t), Some(f)) if t == f) {
+                            result = TypeDeduction::Never;
+                        }
+                        prev = next;
+                    }
+                    result
+                }
             },
         };
-        self.expr_types.push(deduction.clone());
+        self.expr_types[pos] = deduction.clone();
         deduction
     }
 
     fn block(&mut self, block: &Block) -> TypeDeduction {
+        let pos = self.expr_types.len();
+        self.expr_types.push(TypeDeduction::Unknown);
         let result = self.current;
         self.current += 1;
         for stmt in block.statement.iter() {
@@ -343,7 +396,7 @@ impl TypeChecker {
             TypeDeduction::Exact(TypeInstance::Unit)
         };
         self.current = result;
-        self.expr_types.push(ty.clone());
+        self.expr_types[pos] = ty.clone();
         ty
     }
 }
