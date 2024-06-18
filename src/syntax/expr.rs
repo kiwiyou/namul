@@ -156,7 +156,7 @@ pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<BinaryOperation> {
     let first = seq!(
         operand(),
         _: opt(TokenKind::White),
-        alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
+        alt((TokenKind::PunctPlusSign, TokenKind::PunctHyphenMinus)),
         _: opt(TokenKind::White),
         operand(),
     )
@@ -170,7 +170,7 @@ pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<BinaryOperation> {
         0..,
         seq!(
             _: opt(TokenKind::White),
-            alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
+            alt((TokenKind::PunctPlusSign, TokenKind::PunctHyphenMinus)),
             _: opt(TokenKind::White),
             operand(),
         ),
