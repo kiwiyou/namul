@@ -4,6 +4,7 @@ use winnow::{
 };
 
 use super::{
+    format::{parse_format_string, FormatString},
     literal::{parse_literal, Literal},
     path::{parse_path, Path},
     stmt::{parse_statement, Statement},
@@ -21,13 +22,14 @@ pub enum NonblockExpression {
     Literal(Literal),
     Path(Path),
     Binary(BinaryOperation),
-    If(If),
     Comparison(Comparison),
+    Print(FormatString),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
-        parse_if.map(NonblockExpression::If),
+        parse_format_string.map(NonblockExpression::Print),
+        parse_logcial.map(NonblockExpression::Binary),
         parse_comparison.map(NonblockExpression::Comparison),
         parse_add_sub.map(NonblockExpression::Binary),
         parse_mul_div_mod.map(NonblockExpression::Binary),
@@ -53,10 +55,15 @@ pub fn parse_expression(s: &mut Located<&str>) -> PResult<Expression> {
 #[derive(Debug, Clone)]
 pub enum BlockExpression {
     Block(Block),
+    If(If),
 }
 
 pub fn parse_block_expression(s: &mut Located<&str>) -> PResult<BlockExpression> {
-    parse_block.map(BlockExpression::Block).parse_next(s)
+    alt((
+        parse_if.map(BlockExpression::If),
+        parse_block.map(BlockExpression::Block),
+    ))
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
@@ -87,44 +94,127 @@ pub struct BinaryOperation {
     pub rhs: Box<Expression>,
 }
 
-pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<BinaryOperation> {
-    seq!(
-        alt((parse_mul_div_mod.map(NonblockExpression::Binary).map(Expression::Nonblock), parse_term)),
-        _: opt(TokenKind::White),
-        alt((TokenKind::PunctPlusSign, TokenKind::PunctHyphenMinus)),
-        _: opt(TokenKind::White),
+pub fn parse_logcial(s: &mut Located<&str>) -> PResult<BinaryOperation> {
+    let operand = || {
         alt((
-            parse_add_sub.map(NonblockExpression::Binary).map(Expression::Nonblock),
-            parse_mul_div_mod.map(NonblockExpression::Binary).map(Expression::Nonblock),
+            parse_comparison
+                .map(NonblockExpression::Comparison)
+                .map(Expression::Nonblock),
+            parse_add_sub
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_mul_div_mod
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
             parse_term,
         ))
+    };
+    let first = seq!(
+        operand(),
+        _: opt(TokenKind::White),
+        alt((TokenKind::PunctAmpersandAmpersand, TokenKind::PunctVerticalLineVerticalLine)),
+        _: opt(TokenKind::White),
+        operand(),
     )
-    .map(|(lhs, operator, rhs)| {
-        BinaryOperation {
-            lhs: Box::new(lhs),
-            operator,
-            rhs: Box::new(rhs),
-        }
+    .map(|(lhs, op, rhs)| BinaryOperation {
+        lhs: Box::new(lhs),
+        operator: op,
+        rhs: Box::new(rhs),
     })
+    .parse_next(s)?;
+    repeat(
+        0..,
+        seq!(
+            _: opt(TokenKind::White),
+        alt((TokenKind::PunctAmpersandAmpersand, TokenKind::PunctVerticalLineVerticalLine)),
+        _: opt(TokenKind::White),
+            operand(),
+        ),
+    )
+    .fold(
+        move || first.clone(),
+        |prev, (op, next)| BinaryOperation {
+            lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
+            operator: op,
+            rhs: Box::new(next),
+        },
+    )
+    .parse_next(s)
+}
+
+pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<BinaryOperation> {
+    let operand = || {
+        alt((
+            parse_mul_div_mod
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_term,
+        ))
+    };
+    let first = seq!(
+        operand(),
+        _: opt(TokenKind::White),
+        alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
+        _: opt(TokenKind::White),
+        operand(),
+    )
+    .map(|(lhs, op, rhs)| BinaryOperation {
+        lhs: Box::new(lhs),
+        operator: op,
+        rhs: Box::new(rhs),
+    })
+    .parse_next(s)?;
+    repeat(
+        0..,
+        seq!(
+            _: opt(TokenKind::White),
+            alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
+            _: opt(TokenKind::White),
+            operand(),
+        ),
+    )
+    .fold(
+        move || first.clone(),
+        |prev, (op, next)| BinaryOperation {
+            lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
+            operator: op,
+            rhs: Box::new(next),
+        },
+    )
     .parse_next(s)
 }
 
 pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<BinaryOperation> {
-    seq!(
+    let first = seq!(
         parse_term,
         _: opt(TokenKind::White),
         alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
         _: opt(TokenKind::White),
-        alt((
-            parse_mul_div_mod.map(NonblockExpression::Binary).map(Expression::Nonblock),
-            parse_term,
-        ))
+        parse_term,
     )
-    .map(|(lhs, operator, rhs)| BinaryOperation {
+    .map(|(lhs, op, rhs)| BinaryOperation {
         lhs: Box::new(lhs),
-        operator,
+        operator: op,
         rhs: Box::new(rhs),
     })
+    .parse_next(s)?;
+    repeat(
+        0..,
+        seq!(
+            _: opt(TokenKind::White),
+            alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
+            _: opt(TokenKind::White),
+            parse_term,
+        ),
+    )
+    .fold(
+        move || first.clone(),
+        |prev, (op, next)| BinaryOperation {
+            lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
+            operator: op,
+            rhs: Box::new(next),
+        },
+    )
     .parse_next(s)
 }
 
@@ -144,8 +234,8 @@ pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
 #[derive(Debug, Clone)]
 pub struct If {
     pub condition: Box<Expression>,
-    pub truthy: Box<Expression>,
-    pub falsy: Option<Box<Expression>>,
+    pub truthy: Block,
+    pub falsy: Option<Block>,
 }
 
 pub fn parse_if(s: &mut Located<&str>) -> PResult<If> {
@@ -154,15 +244,15 @@ pub fn parse_if(s: &mut Located<&str>) -> PResult<If> {
         _: opt(TokenKind::White),
         parse_expression,
         _: opt(TokenKind::White),
-        parse_expression,
+        parse_block,
         opt(
-            preceded((opt(TokenKind::White), "else", opt(TokenKind::White)), parse_expression)
+            preceded((opt(TokenKind::White), "else", opt(TokenKind::White)), parse_block)
         )
     )
     .map(|(condition, truthy, falsy)| If {
         condition: Box::new(condition),
-        truthy: Box::new(truthy),
-        falsy: falsy.map(Box::new),
+        truthy,
+        falsy,
     })
     .parse_next(s)
 }
@@ -191,9 +281,10 @@ pub fn parse_comparison(s: &mut Located<&str>) -> PResult<Comparison> {
                 alt((
                     TokenKind::PunctLessThanSign,
                     TokenKind::PunctGreaterThanSign,
-                    TokenKind::EqEq,
-                    TokenKind::LtEq,
-                    TokenKind::GtEq,
+                    TokenKind::PunctEqualsSignEqualsSign,
+                    TokenKind::PunctExclamationMarkEqualsSign,
+                    TokenKind::PunctLessThanSignEqualsSign,
+                    TokenKind::PunctGreaterThanSignEqualsSign,
                 )),
                 _: opt(TokenKind::White),
                 alt((

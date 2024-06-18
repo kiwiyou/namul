@@ -6,7 +6,7 @@ use crate::syntax::{
     literal::Literal,
     path::Path,
     stmt::{Pattern, Statement},
-    Program,
+    Program, TokenKind,
 };
 
 #[derive(Debug, Clone)]
@@ -171,7 +171,6 @@ impl NameResolver {
             Statement::Expression(expr) => {
                 self.expression(Rc::clone(&owned), expr);
             }
-            Statement::Print(_) => {}
             Statement::Assignment(assignment) => match &assignment.lhs {
                 Pattern::Ident(_) => {}
                 Pattern::Declaration(decl) => {
@@ -204,6 +203,13 @@ impl NameResolver {
                 BlockExpression::Block(block) => {
                     self.block(parent.clone(), block);
                 }
+                BlockExpression::If(if_) => {
+                    self.expression(parent.clone(), &if_.condition);
+                    self.block(parent.clone(), &if_.truthy);
+                    if let Some(falsy) = &if_.falsy {
+                        self.block(parent.clone(), falsy);
+                    }
+                }
             },
             Expression::Nonblock(nonblock) => match nonblock {
                 NonblockExpression::Literal(_) => {}
@@ -212,19 +218,13 @@ impl NameResolver {
                     self.expression(parent.clone(), &binary.lhs);
                     self.expression(parent.clone(), &binary.rhs);
                 }
-                NonblockExpression::If(if_) => {
-                    self.expression(parent.clone(), &if_.condition);
-                    self.expression(parent.clone(), &if_.truthy);
-                    if let Some(falsy) = &if_.falsy {
-                        self.expression(parent.clone(), falsy);
-                    }
-                }
                 NonblockExpression::Comparison(comparison) => {
                     self.expression(parent.clone(), &comparison.first);
                     for (_, rest) in comparison.chain.iter() {
                         self.expression(parent.clone(), rest);
                     }
                 }
+                NonblockExpression::Print(_) => {}
             },
         }
         parent
@@ -285,7 +285,6 @@ impl TypeChecker {
             Statement::Expression(expr) => {
                 self.expression(expr);
             }
-            Statement::Print(_) => {}
             Statement::Assignment(assignment) => {
                 self.expression(&assignment.rhs);
                 match &assignment.lhs {
@@ -319,6 +318,25 @@ impl TypeChecker {
         let deduction = match expr {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => self.block(block),
+                BlockExpression::If(if_) => {
+                    let condition = self.expression(&if_.condition);
+                    if condition.deduce() != Some(TypeInstance::Bool) {
+                        TypeDeduction::Never
+                    } else {
+                        let truthy = self.block(&if_.truthy);
+                        if let Some(falsy) = if_.falsy.as_ref() {
+                            let falsy = self.block(&falsy);
+                            if matches!((truthy.deduce(), falsy.deduce()), (Some(t), Some(f)) if t == f)
+                            {
+                                truthy.clone()
+                            } else {
+                                TypeDeduction::Never
+                            }
+                        } else {
+                            TypeDeduction::Exact(TypeInstance::Unit)
+                        }
+                    }
+                }
             },
             Expression::Nonblock(nonblock) => match nonblock {
                 NonblockExpression::Literal(literal) => match literal {
@@ -337,30 +355,23 @@ impl TypeChecker {
                 NonblockExpression::Binary(binary) => {
                     let lhs = self.expression(&binary.lhs);
                     let rhs = self.expression(&binary.rhs);
-                    match (lhs.deduce(), rhs.deduce()) {
-                        (Some(TypeInstance::I32), Some(TypeInstance::I32)) => {
+                    match (lhs.deduce(), binary.operator.kind, rhs.deduce()) {
+                        (
+                            Some(TypeInstance::I32),
+                            TokenKind::PunctAmpersandAmpersand
+                            | TokenKind::PunctVerticalLineVerticalLine,
+                            Some(TypeInstance::I32),
+                        ) => TypeDeduction::Never,
+                        (Some(TypeInstance::I32), _, Some(TypeInstance::I32)) => {
                             TypeDeduction::Exact(TypeInstance::I32)
                         }
+                        (
+                            Some(TypeInstance::Bool),
+                            TokenKind::PunctAmpersandAmpersand
+                            | TokenKind::PunctVerticalLineVerticalLine,
+                            Some(TypeInstance::Bool),
+                        ) => TypeDeduction::Exact(TypeInstance::Bool),
                         _ => TypeDeduction::Never,
-                    }
-                }
-                NonblockExpression::If(if_) => {
-                    let condition = self.expression(&if_.condition);
-                    if condition.deduce() != Some(TypeInstance::Bool) {
-                        TypeDeduction::Never
-                    } else {
-                        let truthy = self.expression(&if_.truthy);
-                        if let Some(falsy) = if_.falsy.as_ref() {
-                            let falsy = self.expression(&falsy);
-                            if matches!((truthy.deduce(), falsy.deduce()), (Some(t), Some(f)) if t == f)
-                            {
-                                truthy.clone()
-                            } else {
-                                TypeDeduction::Never
-                            }
-                        } else {
-                            TypeDeduction::Exact(TypeInstance::Unit)
-                        }
                     }
                 }
                 NonblockExpression::Comparison(comparison) => {
@@ -375,6 +386,7 @@ impl TypeChecker {
                     }
                     result
                 }
+                NonblockExpression::Print(_) => TypeDeduction::Exact(TypeInstance::Unit),
             },
         };
         self.expr_types[pos] = deduction.clone();

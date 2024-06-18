@@ -4,7 +4,7 @@ use crate::syntax::{
     expr::{
         BinaryOperation, Block, BlockExpression, Comparison, Expression, If, NonblockExpression,
     },
-    format::FormatFragment,
+    format::{FormatFragment, FormatString},
     item::Type,
     literal::Literal,
     path::Path,
@@ -14,19 +14,6 @@ use crate::syntax::{
 use std::{cell::RefCell, collections::HashSet, fmt::Write, rc::Rc};
 
 pub mod typeck;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeDefinition {
-    name: String,
-    mapped: String,
-    construction: TypeConstruction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeConstruction {
-    Path(String),
-    Tuple(Vec<TypeConstruction>),
-}
 
 pub struct Translator {
     scopes: Vec<Rc<RefCell<Scope>>>,
@@ -79,13 +66,37 @@ impl Translator {
     }
 
     pub fn binary(&mut self, binary: &BinaryOperation) -> Intermediate {
-        let lhs = self.expression(&binary.lhs);
-        let rhs = self.expression(&binary.rhs);
         let Some(ty) = self.current_expr_type().deduce() else {
             panic!("Could not deduce type.");
         };
+        self.current_expr += 1;
+        let lhs = self.expression(&binary.lhs);
+        let rhs = self.expression(&binary.rhs);
         let result = match (lhs.ty, binary.operator.kind, rhs.ty) {
-            (TypeInstance::I32, _, TypeInstance::I32) => Intermediate {
+            (
+                TypeInstance::I32,
+                TokenKind::PunctPlusSign
+                | TokenKind::PunctHyphenMinus
+                | TokenKind::PunctAsterisk
+                | TokenKind::PunctSolidus
+                | TokenKind::PunctPercentSign,
+                TypeInstance::I32,
+            ) => Intermediate {
+                ty,
+                feature: lhs.feature.union(&rhs.feature).copied().collect(),
+                decl: lhs.decl + &rhs.decl,
+                global: lhs.global + &rhs.global,
+                effect: lhs.effect + &rhs.effect,
+                immediate: format!(
+                    "({} {} {})",
+                    lhs.immediate, binary.operator.content, rhs.immediate
+                ),
+            },
+            (
+                TypeInstance::Bool,
+                TokenKind::PunctAmpersandAmpersand | TokenKind::PunctVerticalLineVerticalLine,
+                TypeInstance::Bool,
+            ) => Intermediate {
                 ty,
                 feature: lhs.feature.union(&rhs.feature).copied().collect(),
                 decl: lhs.decl + &rhs.decl,
@@ -101,7 +112,6 @@ impl Translator {
                 binary.operator.content
             ),
         };
-        self.current_expr += 1;
         result
     }
 
@@ -136,10 +146,10 @@ impl Translator {
     }
 
     pub fn comparison(&mut self, comparison: &Comparison) -> Intermediate {
-        self.current_expr += 1;
         let Some(ty) = self.current_expr_type().deduce() else {
             panic!("Could not deduce type.");
         };
+        self.current_expr += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
@@ -170,7 +180,12 @@ impl Translator {
                     )
                     .unwrap();
                 }
-                (TypeInstance::Bool, TokenKind::EqEq | TokenKind::BangEq, TypeInstance::Bool) => {
+                (
+                    TypeInstance::Bool,
+                    TokenKind::PunctEqualsSignEqualsSign
+                    | TokenKind::PunctExclamationMarkEqualsSign,
+                    TypeInstance::Bool,
+                ) => {
                     writeln!(
                         effect,
                         "comp_{id} = {prev} {} {};",
@@ -200,6 +215,55 @@ impl Translator {
         }
     }
 
+    pub fn print(&mut self, format: &FormatString) -> Intermediate {
+        let Some(ty) = self.current_expr_type().deduce() else {
+            panic!("Could not deduce type.");
+        };
+        self.current_expr += 1;
+        let mut feature = HashSet::new();
+        let mut effect = String::new();
+        feature.insert("writer_def");
+        for fragment in format.fragment.iter() {
+            match fragment {
+                FormatFragment::Literal(literal) => {
+                    feature.insert("write_literal");
+                    writeln!(
+                        effect,
+                        "write_literal({}, {});",
+                        double_quote(literal),
+                        literal.len()
+                    )
+                    .unwrap();
+                }
+                FormatFragment::Ident { ident, .. } => {
+                    let scope = self.current_scope();
+                    let scope = scope.borrow();
+                    let Some(var) = scope.get_var(&ident.content) else {
+                        panic!("Could not print undefined variable {}.", ident.content);
+                    };
+                    let Some(ty) = var.ty.deduce() else {
+                        panic!("Could not deduce type of {}.", ident.content);
+                    };
+                    match ty {
+                        TypeInstance::I32 => {
+                            feature.insert("write_i32");
+                            writeln!(effect, "write_i32({});", var.mangle).unwrap();
+                        }
+                        _ => panic!("Could not print value of type `{}`.", ty),
+                    }
+                }
+            }
+        }
+        Intermediate {
+            ty,
+            feature,
+            decl: "".into(),
+            global: "".into(),
+            effect,
+            immediate: "".into(),
+        }
+    }
+
     pub fn if_(&mut self, if_: &If) -> Intermediate {
         let Some(ty) = self.current_expr_type().deduce() else {
             panic!("Could not deduce type.");
@@ -221,7 +285,7 @@ impl Translator {
                 writeln!(effect, "{} if_{if_id};", ty.mapped()).unwrap();
             }
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
-            let truthy = self.expression(&if_.truthy);
+            let truthy = self.block(&if_.truthy);
             feature.extend(truthy.feature);
             decl.push_str(&truthy.decl);
             global.push_str(&truthy.global);
@@ -230,7 +294,7 @@ impl Translator {
                 writeln!(effect, "if_{if_id} = {};", truthy.immediate).unwrap();
             }
             writeln!(effect, "}} else {{").unwrap();
-            let falsy = self.expression(falsy);
+            let falsy = self.block(falsy);
             feature.extend(falsy.feature);
             decl.push_str(&falsy.decl);
             global.push_str(&falsy.global);
@@ -249,7 +313,7 @@ impl Translator {
             }
         } else {
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
-            let truthy = self.expression(&if_.truthy);
+            let truthy = self.block(&if_.truthy);
             feature.extend(truthy.feature);
             decl.push_str(&truthy.decl);
             global.push_str(&truthy.global);
@@ -309,40 +373,6 @@ impl Translator {
                     decl.push_str(&expr.decl);
                     global.push_str(&expr.global);
                     effect.push_str(&expr.effect);
-                }
-                Statement::Print(format) => {
-                    feature.insert("writer_def");
-                    for fragment in format.fragment.iter() {
-                        match fragment {
-                            FormatFragment::Literal(literal) => {
-                                feature.insert("write_literal");
-                                writeln!(
-                                    effect,
-                                    "write_literal({}, {});",
-                                    double_quote(literal),
-                                    literal.len()
-                                )
-                                .unwrap();
-                            }
-                            FormatFragment::Ident { ident, .. } => {
-                                let scope = self.current_scope();
-                                let scope = scope.borrow();
-                                let Some(var) = scope.get_var(&ident.content) else {
-                                    panic!("Could not print undefined variable {}.", ident.content);
-                                };
-                                let Some(ty) = var.ty.deduce() else {
-                                    panic!("Could not deduce type of {}.", ident.content);
-                                };
-                                match ty {
-                                    TypeInstance::I32 => {
-                                        feature.insert("write_i32");
-                                        writeln!(effect, "write_i32({});", var.mangle).unwrap();
-                                    }
-                                    _ => panic!("Could not print value of type `{}`.", ty),
-                                }
-                            }
-                        }
-                    }
                 }
                 Statement::Assignment(assignment) => {
                     let scope = self.current_scope();
@@ -428,13 +458,14 @@ impl Translator {
         match expr {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => self.block(block),
+                BlockExpression::If(if_) => self.if_(if_),
             },
             Expression::Nonblock(nonblock) => match nonblock {
                 NonblockExpression::Path(path) => self.path(path),
                 NonblockExpression::Binary(binary) => self.binary(binary),
                 NonblockExpression::Literal(literal) => self.literal(literal),
-                NonblockExpression::If(if_) => self.if_(if_),
                 NonblockExpression::Comparison(comparison) => self.comparison(comparison),
+                NonblockExpression::Print(format) => self.print(format),
             },
         }
     }

@@ -7,7 +7,6 @@ use crate::syntax::expr::parse_expression;
 
 use super::{
     expr::{parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression},
-    format::{parse_format_string, FormatString},
     item::{parse_type, Type},
     Token, TokenKind,
 };
@@ -17,7 +16,6 @@ pub enum Statement {
     Nop,
     Input(InputParser),
     Expression(Expression),
-    Print(FormatString),
     Assignment(Assignment),
     Repeat(Repeat),
 }
@@ -25,11 +23,6 @@ pub enum Statement {
 pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
     alt((
         TokenKind::PunctSemicolon.value(Statement::Nop),
-        terminated(
-            parse_format_string,
-            (opt(TokenKind::White), TokenKind::PunctSemicolon),
-        )
-        .map(Statement::Print),
         terminated(
             parse_input_parser,
             (opt(TokenKind::White), TokenKind::PunctSemicolon),

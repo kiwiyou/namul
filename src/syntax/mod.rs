@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use stmt::{parse_statement, Statement};
 use winnow::{
     combinator::{opt, preceded, repeat, terminated},
@@ -14,43 +12,7 @@ pub mod path;
 pub mod stmt;
 pub mod token;
 
-#[derive(Debug, Clone)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub content: String,
-    pub span: Range<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenKind {
-    White,
-    Identifier,
-    LiteralDecimal,
-    KeywordRep,
-    KeywordIf,
-    KeywordElse,
-    KeywordTrue,
-    KeywordFalse,
-    PunctComma,
-    PunctSemicolon,
-    PunctVerticalLine,
-    PunctPlusSign,
-    PunctHyphenMinus,
-    PunctAsterisk,
-    PunctSolidus,
-    PunctPercentSign,
-    PunctLeftParenthesis,
-    PunctRightParenthesis,
-    PunctLeftCurlyBracket,
-    PunctRightCurlyBracket,
-    PunctEqualsSign,
-    PunctLessThanSign,
-    PunctGreaterThanSign,
-    BangEq,
-    EqEq,
-    LtEq,
-    GtEq,
-}
+pub use token::{Token, TokenKind};
 
 #[derive(Debug, Clone)]
 pub struct Program {

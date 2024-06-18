@@ -8,7 +8,45 @@ use winnow::{
     Located, PResult, Parser,
 };
 
-use crate::syntax::{Token, TokenKind};
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub content: String,
+    pub span: Range<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    White,
+    Identifier,
+    LiteralDecimal,
+    KeywordRep,
+    KeywordIf,
+    KeywordElse,
+    KeywordTrue,
+    KeywordFalse,
+    PunctComma,
+    PunctSemicolon,
+    PunctVerticalLine,
+    PunctPlusSign,
+    PunctHyphenMinus,
+    PunctAsterisk,
+    PunctSolidus,
+    PunctPercentSign,
+    PunctLeftParenthesis,
+    PunctRightParenthesis,
+    PunctLeftCurlyBracket,
+    PunctRightCurlyBracket,
+    PunctEqualsSign,
+    PunctLessThanSign,
+    PunctGreaterThanSign,
+    PunctExclamationMarkEqualsSign,
+    PunctEqualsSignEqualsSign,
+    PunctLessThanSignEqualsSign,
+    PunctGreaterThanSignEqualsSign,
+    PunctAmpersandAmpersand,
+    PunctVerticalLineVerticalLine,
+}
 
 fn token<T: Into<String>>(kind: TokenKind) -> impl Fn((T, Range<usize>)) -> Token {
     move |(content, span)| Token {
@@ -39,10 +77,24 @@ pub fn parse_token(s: &mut Located<&str>) -> PResult<Token> {
 
 pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
     alt((
-        literal("!=").with_span().map(token(TokenKind::BangEq)),
-        literal("==").with_span().map(token(TokenKind::EqEq)),
-        literal("<=").with_span().map(token(TokenKind::LtEq)),
-        literal(">=").with_span().map(token(TokenKind::GtEq)),
+        literal("&&")
+            .with_span()
+            .map(token(TokenKind::PunctAmpersandAmpersand)),
+        literal("||")
+            .with_span()
+            .map(token(TokenKind::PunctVerticalLineVerticalLine)),
+        literal("!=")
+            .with_span()
+            .map(token(TokenKind::PunctExclamationMarkEqualsSign)),
+        literal("==")
+            .with_span()
+            .map(token(TokenKind::PunctEqualsSignEqualsSign)),
+        literal("<=")
+            .with_span()
+            .map(token(TokenKind::PunctLessThanSignEqualsSign)),
+        literal(">=")
+            .with_span()
+            .map(token(TokenKind::PunctGreaterThanSignEqualsSign)),
         literal('=')
             .with_span()
             .map(token(TokenKind::PunctEqualsSign)),
