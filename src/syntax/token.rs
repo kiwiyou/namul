@@ -46,6 +46,8 @@ pub enum TokenKind {
     PunctGreaterThanSignEqualsSign,
     PunctAmpersandAmpersand,
     PunctVerticalLineVerticalLine,
+    PunctQuestionMark,
+    PunctColon,
 }
 
 fn token<T: Into<String>>(kind: TokenKind) -> impl Fn((T, Range<usize>)) -> Token {
@@ -76,7 +78,7 @@ pub fn parse_token(s: &mut Located<&str>) -> PResult<Token> {
 }
 
 pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
-    alt((
+    alt([
         literal("&&")
             .with_span()
             .map(token(TokenKind::PunctAmpersandAmpersand)),
@@ -95,48 +97,52 @@ pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
         literal(">=")
             .with_span()
             .map(token(TokenKind::PunctGreaterThanSignEqualsSign)),
-        literal('=')
+        literal(":").with_span().map(token(TokenKind::PunctColon)),
+        literal("?")
+            .with_span()
+            .map(token(TokenKind::PunctQuestionMark)),
+        literal("=")
             .with_span()
             .map(token(TokenKind::PunctEqualsSign)),
-        literal('<')
+        literal("<")
             .with_span()
             .map(token(TokenKind::PunctLessThanSign)),
-        literal('>')
+        literal(">")
             .with_span()
             .map(token(TokenKind::PunctGreaterThanSign)),
-        literal(',').with_span().map(token(TokenKind::PunctComma)),
-        literal(';')
+        literal(",").with_span().map(token(TokenKind::PunctComma)),
+        literal(";")
             .with_span()
             .map(token(TokenKind::PunctSemicolon)),
-        literal('|')
+        literal("|")
             .with_span()
             .map(token(TokenKind::PunctVerticalLine)),
-        literal('+')
+        literal("+")
             .with_span()
             .map(token(TokenKind::PunctPlusSign)),
-        literal('-')
+        literal("-")
             .with_span()
             .map(token(TokenKind::PunctHyphenMinus)),
-        literal('*')
+        literal("*")
             .with_span()
             .map(token(TokenKind::PunctAsterisk)),
-        literal('/').with_span().map(token(TokenKind::PunctSolidus)),
-        literal('%')
+        literal("/").with_span().map(token(TokenKind::PunctSolidus)),
+        literal("%")
             .with_span()
             .map(token(TokenKind::PunctPercentSign)),
-        literal('(')
+        literal("(")
             .with_span()
             .map(token(TokenKind::PunctLeftParenthesis)),
-        literal(')')
+        literal(")")
             .with_span()
             .map(token(TokenKind::PunctRightParenthesis)),
-        literal('{')
+        literal("{")
             .with_span()
             .map(token(TokenKind::PunctLeftCurlyBracket)),
-        literal('}')
+        literal("}")
             .with_span()
             .map(token(TokenKind::PunctRightCurlyBracket)),
-    ))
+    ])
     .parse_next(s)
 }
 

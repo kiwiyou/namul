@@ -3,6 +3,7 @@ use typeck::{Scope, TypeChecker, TypeDeduction, TypeInstance};
 use crate::syntax::{
     expr::{
         BinaryOperation, Block, BlockExpression, Comparison, Expression, If, NonblockExpression,
+        Select,
     },
     format::{FormatFragment, FormatString},
     item::Type,
@@ -303,13 +304,18 @@ impl Translator {
                 writeln!(effect, "if_{if_id} = {};", falsy.immediate).unwrap();
             }
             writeln!(effect, "}}").unwrap();
+            let immediate = if ty == TypeInstance::Unit {
+                "".into()
+            } else {
+                format!("if_{if_id}")
+            };
             Intermediate {
                 ty,
                 feature,
                 decl,
                 global,
                 effect,
-                immediate: "".into(),
+                immediate,
             }
         } else {
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
@@ -329,6 +335,54 @@ impl Translator {
             }
         };
         result
+    }
+
+    pub fn select(&mut self, select: &Select) -> Intermediate {
+        let Some(ty) = self.current_expr_type().deduce() else {
+            panic!("Could not deduce type.");
+        };
+        self.current_expr += 1;
+        let mut feature = HashSet::new();
+        let mut decl = String::new();
+        let mut global = String::new();
+        let mut effect = String::new();
+        let condition = self.expression(&select.condition);
+        feature.extend(condition.feature);
+        decl.push_str(&condition.decl);
+        global.push_str(&condition.decl);
+        effect.push_str(&condition.effect);
+        let if_id = self.counter;
+        self.counter += 1;
+        if ty != TypeInstance::Unit {
+            writeln!(effect, "{} if_{if_id};", ty.mapped()).unwrap();
+        }
+        writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
+        let truthy = self.expression(&select.truthy);
+        feature.extend(truthy.feature);
+        decl.push_str(&truthy.decl);
+        global.push_str(&truthy.global);
+        effect.push_str(&truthy.effect);
+        if ty != TypeInstance::Unit {
+            writeln!(effect, "if_{if_id} = {};", truthy.immediate).unwrap();
+        }
+        writeln!(effect, "}} else {{").unwrap();
+        let falsy = self.expression(&select.falsy);
+        feature.extend(falsy.feature);
+        decl.push_str(&falsy.decl);
+        global.push_str(&falsy.global);
+        effect.push_str(&falsy.effect);
+        if ty != TypeInstance::Unit {
+            writeln!(effect, "if_{if_id} = {};", falsy.immediate).unwrap();
+        }
+        writeln!(effect, "}}").unwrap();
+        Intermediate {
+            ty,
+            feature,
+            decl,
+            global,
+            effect,
+            immediate: format!("if_{if_id}"),
+        }
     }
 
     pub fn block(&mut self, block: &Block) -> Intermediate {
@@ -466,6 +520,7 @@ impl Translator {
                 NonblockExpression::Literal(literal) => self.literal(literal),
                 NonblockExpression::Comparison(comparison) => self.comparison(comparison),
                 NonblockExpression::Print(format) => self.print(format),
+                NonblockExpression::Select(select) => self.select(select),
             },
         }
     }

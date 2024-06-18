@@ -225,6 +225,7 @@ impl NameResolver {
                     }
                 }
                 NonblockExpression::Print(_) => {}
+                NonblockExpression::Select(_) => {}
             },
         }
         parent
@@ -387,6 +388,21 @@ impl TypeChecker {
                     result
                 }
                 NonblockExpression::Print(_) => TypeDeduction::Exact(TypeInstance::Unit),
+                NonblockExpression::Select(select) => {
+                    let condition = self.expression(&select.condition);
+                    if condition.deduce() != Some(TypeInstance::Bool) {
+                        TypeDeduction::Never
+                    } else {
+                        let truthy = self.expression(&select.truthy);
+                        let falsy = self.expression(&select.falsy);
+                        if matches!((truthy.deduce(), falsy.deduce()), (Some(t), Some(f)) if t == f)
+                        {
+                            truthy.clone()
+                        } else {
+                            TypeDeduction::Never
+                        }
+                    }
+                }
             },
         };
         self.expr_types[pos] = deduction.clone();

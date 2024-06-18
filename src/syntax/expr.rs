@@ -24,15 +24,17 @@ pub enum NonblockExpression {
     Binary(BinaryOperation),
     Comparison(Comparison),
     Print(FormatString),
+    Select(Select),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
-        parse_format_string.map(NonblockExpression::Print),
-        parse_logcial.map(NonblockExpression::Binary),
+        parse_select.map(NonblockExpression::Select),
+        parse_logical.map(NonblockExpression::Binary),
         parse_comparison.map(NonblockExpression::Comparison),
         parse_add_sub.map(NonblockExpression::Binary),
         parse_mul_div_mod.map(NonblockExpression::Binary),
+        parse_format_string.map(NonblockExpression::Print),
         parse_literal.map(NonblockExpression::Literal),
         parse_path.map(NonblockExpression::Path),
     ))
@@ -94,7 +96,7 @@ pub struct BinaryOperation {
     pub rhs: Box<Expression>,
 }
 
-pub fn parse_logcial(s: &mut Located<&str>) -> PResult<BinaryOperation> {
+pub fn parse_logical(s: &mut Located<&str>) -> PResult<BinaryOperation> {
     let operand = || {
         alt((
             parse_comparison
@@ -220,6 +222,9 @@ pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<BinaryOperation> {
 
 pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
     alt((
+        parse_format_string
+            .map(NonblockExpression::Print)
+            .map(Expression::Nonblock),
         parse_literal
             .map(NonblockExpression::Literal)
             .map(Expression::Nonblock),
@@ -304,4 +309,48 @@ pub fn parse_comparison(s: &mut Located<&str>) -> PResult<Comparison> {
             chain,
         })
         .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Select {
+    pub condition: Box<Expression>,
+    pub truthy: Box<Expression>,
+    pub falsy: Box<Expression>,
+}
+
+pub fn parse_select(s: &mut Located<&str>) -> PResult<Select> {
+    let operand = || {
+        alt((
+            parse_logical
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_comparison
+                .map(NonblockExpression::Comparison)
+                .map(Expression::Nonblock),
+            parse_add_sub
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_mul_div_mod
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_term,
+        ))
+    };
+    seq!(
+        operand(),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctQuestionMark,
+        _: opt(TokenKind::White),
+        operand(),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctColon,
+        _: opt(TokenKind::White),
+        operand(),
+    )
+    .map(|(condition, truthy, falsy)| Select {
+        condition: Box::new(condition),
+        truthy: Box::new(truthy),
+        falsy: Box::new(falsy),
+    })
+    .parse_next(s)
 }
