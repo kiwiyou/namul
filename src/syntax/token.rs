@@ -191,7 +191,9 @@ pub fn parse_keyword(s: &mut Located<&str>) -> PResult<Token> {
         literal("else")
             .with_span()
             .map(token(TokenKind::KeywordElse)),
-        literal("while").with_span().map(token(TokenKind::KeywordWhile)),
+        literal("while")
+            .with_span()
+            .map(token(TokenKind::KeywordWhile)),
         literal("rep").with_span().map(token(TokenKind::KeywordRep)),
         literal("true")
             .with_span()

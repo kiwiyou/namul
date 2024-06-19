@@ -11,13 +11,19 @@ use crate::syntax::{
     stmt::{Pattern, Statement},
     Program, TokenKind,
 };
-use std::{cell::RefCell, collections::HashSet, fmt::Write, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fmt::Write,
+    rc::Rc,
+};
 
 pub mod typeck;
 
 pub struct Translator {
     scopes: Vec<Rc<RefCell<Scope>>>,
     inference: Vec<Rc<RefCell<TypeInference>>>,
+    tuples: HashMap<String, usize>,
     current_scope: usize,
     current_infer: usize,
     counter: usize,
@@ -45,8 +51,12 @@ impl Translator {
                 for arg in tuple.iter() {
                     args.push(self.synthesize(&arg.borrow())?);
                 }
-                let id = self.counter;
-                self.counter += 1;
+                let instance = TypeInstance::Tuple {
+                    id: 0,
+                    args: args.clone(),
+                };
+                let len = self.tuples.len();
+                let id = *self.tuples.entry(instance.id_removed()).or_insert(len);
                 Some(TypeInstance::Tuple { id, args })
             }
         }
@@ -411,18 +421,24 @@ impl Translator {
 
     pub fn make_tuple(&mut self, make_tuple: &MakeTuple) -> Intermediate {
         let current_infer = self.current_infer();
+        let tuple_count = self.tuples.len();
         let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
+        let is_new = self.tuples.len() > tuple_count;
         self.current_infer += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
         let ty_mapped = ty.mapped();
-        writeln!(decl, "typedef struct {ty_mapped} {ty_mapped};").unwrap();
+        if is_new {
+            writeln!(decl, "typedef struct {ty_mapped} {ty_mapped};").unwrap();
+        }
         let mut definition = String::new();
-        writeln!(definition, "struct {ty_mapped} {{").unwrap();
+        if is_new {
+            writeln!(definition, "struct {ty_mapped} {{").unwrap();
+        }
         let mut construct = String::new();
         let mt_id = self.counter;
         self.counter += 1;
@@ -435,12 +451,16 @@ impl Translator {
             effect.push_str(&arg.effect);
             construct.push_str(&arg.immediate);
             construct.push_str(", ");
-            writeln!(definition, "{} m{};", arg.ty.mapped(), i).unwrap();
+            if is_new {
+                writeln!(definition, "{} m{};", arg.ty.mapped(), i).unwrap();
+            }
         }
         writeln!(construct, "}};").unwrap();
         effect.push_str(&construct);
-        writeln!(definition, "}};").unwrap();
-        global.push_str(&definition);
+        if is_new {
+            writeln!(definition, "}};").unwrap();
+            global.push_str(&definition);
+        }
         Intermediate {
             ty,
             feature,
@@ -656,6 +676,7 @@ impl Translator {
         let mut translator = Translator {
             scopes: type_checker.scopes,
             inference: type_checker.inference,
+            tuples: Default::default(),
             current_scope: 0,
             current_infer: 0,
             counter: 0,

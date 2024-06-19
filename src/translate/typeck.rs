@@ -24,6 +24,31 @@ pub enum TypeInstance {
     Tuple { id: usize, args: Vec<TypeInstance> },
 }
 
+impl TypeInstance {
+    fn remove_id(&self, out: &mut String) {
+        use TypeInstance::*;
+        match self {
+            I32 => out.push('0'),
+            Unit => out.push('1'),
+            Bool => out.push('2'),
+            Tuple { args, .. } => {
+                out.push_str("3[");
+                for arg in args.iter() {
+                    arg.remove_id(out);
+                    out.push(',');
+                }
+                out.push(']');
+            }
+        }
+    }
+
+    pub fn id_removed(&self) -> String {
+        let mut ret = String::new();
+        self.remove_id(&mut ret);
+        ret
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeInference {
     Exact(TypeInstance),
@@ -478,13 +503,17 @@ impl TypeChecker {
                 };
                 ty
             }
-            Type::Tuple(args) => TypeInstance::Tuple {
-                id: self.tuple_id,
-                args: args
-                    .iter()
-                    .map(|ty| self.construct_type(scope, ty))
-                    .collect(),
-            },
+            Type::Tuple(args) => {
+                let id = self.tuple_id;
+                self.tuple_id += 1;
+                TypeInstance::Tuple {
+                    id,
+                    args: args
+                        .iter()
+                        .map(|ty| self.construct_type(scope, ty))
+                        .collect(),
+                }
+            }
         }
     }
 
