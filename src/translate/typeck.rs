@@ -19,6 +19,7 @@ pub struct Scope {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeInstance {
     I32,
+    I64,
     Unit,
     Bool,
     Tuple { id: usize, args: Vec<TypeInstance> },
@@ -39,6 +40,7 @@ impl TypeInstance {
                 }
                 out.push(']');
             }
+            I64 => out.push('4'),
         }
     }
 
@@ -85,10 +87,13 @@ impl TypeInference {
                     self.clone()
                 }
             }
-            _ if self == other => return,
             (Exact(TypeInstance::I32), Integer) | (Integer, Exact(TypeInstance::I32)) => {
                 Exact(TypeInstance::I32)
             }
+            (Exact(TypeInstance::I64), Integer) | (Integer, Exact(TypeInstance::I64)) => {
+                Exact(TypeInstance::I64)
+            }
+            _ if self == other => return,
             _ => Never,
         };
         *self = unified.clone();
@@ -112,6 +117,7 @@ impl Display for TypeInstance {
                 }
                 f.write_str(")")
             }
+            TypeInstance::I64 => f.write_str("i64"),
         }
     }
 }
@@ -123,6 +129,7 @@ impl TypeInstance {
             TypeInstance::Unit => "void".into(),
             TypeInstance::Bool => "char".into(),
             TypeInstance::Tuple { id, .. } => format!("T_{id}"),
+            TypeInstance::I64 => "int64_t".into(),
         }
     }
 }
@@ -138,6 +145,7 @@ impl Scope {
     pub fn root() -> Self {
         let mut ty = HashMap::new();
         ty.insert("i32".into(), TypeInstance::I32);
+        ty.insert("i64".into(), TypeInstance::I64);
         ty.insert("bool".into(), TypeInstance::Bool);
         Self {
             parent: None,

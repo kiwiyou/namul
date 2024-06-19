@@ -104,13 +104,13 @@ impl Translator {
         let rhs = self.expression(&binary.rhs);
         let result = match (lhs.ty, binary.operator.kind, rhs.ty) {
             (
-                TypeInstance::I32,
+                TypeInstance::I32 | TypeInstance::I64,
                 TokenKind::PunctPlusSign
                 | TokenKind::PunctHyphenMinus
                 | TokenKind::PunctAsterisk
                 | TokenKind::PunctSolidus
                 | TokenKind::PunctPercentSign,
-                TypeInstance::I32,
+                TypeInstance::I32 | TypeInstance::I64,
             ) => Intermediate {
                 ty,
                 feature: lhs.feature.union(&rhs.feature).copied().collect(),
@@ -204,7 +204,11 @@ impl Translator {
             writeln!(effect, "if (comp_{id}) {{").unwrap();
             effect.push_str(&next.effect);
             match (&prev_ty, op.kind, &next.ty) {
-                (TypeInstance::I32, _, TypeInstance::I32) => {
+                (
+                    TypeInstance::I32 | TypeInstance::I64,
+                    _,
+                    TypeInstance::I32 | TypeInstance::I64,
+                ) => {
                     writeln!(
                         effect,
                         "comp_{id} = {prev} {} {};",
@@ -278,9 +282,9 @@ impl Translator {
                         panic!("Could not deduce type.");
                     };
                     match var_ty {
-                        TypeInstance::I32 => {
-                            feature.insert("write_i32");
-                            writeln!(effect, "write_i32({});", var.mangle).unwrap();
+                        TypeInstance::I32 | TypeInstance::I64 => {
+                            feature.insert("write_int");
+                            writeln!(effect, "write_int({});", var.mangle).unwrap();
                         }
                         _ => panic!("Could not print value of type `{}`.", ty),
                     }
@@ -496,11 +500,11 @@ impl Translator {
                             panic!("Could not find type `{}` in scope.", ty.content);
                         };
                         let getter = match ty {
-                            TypeInstance::I32 => {
+                            TypeInstance::I32 | TypeInstance::I64 => {
                                 feature.insert("reader_def");
                                 feature.insert("read_white");
-                                feature.insert("read_i32");
-                                "read_i32()"
+                                feature.insert("read_int");
+                                "read_int()"
                             }
                             _ => panic!("Could not find parser for type `{ty}`."),
                         };
@@ -592,7 +596,7 @@ impl Translator {
                     decl.push_str(&times.decl);
                     global.push_str(&times.global);
                     effect.push_str(&times.effect);
-                    if times.ty != TypeInstance::I32 {
+                    if !matches!(times.ty, TypeInstance::I32 | TypeInstance::I64) {
                         panic!("Could not repeat for non-integer type `{}`", times.ty);
                     }
                     writeln!(
@@ -697,8 +701,8 @@ impl Translator {
         if intermediate.feature.contains("write_literal") {
             out.push_str(include_str!("fragments/write_literal.c"));
         }
-        if intermediate.feature.contains("write_i32") {
-            out.push_str(include_str!("fragments/write_i32.c"));
+        if intermediate.feature.contains("write_int") {
+            out.push_str(include_str!("fragments/write_int.c"));
         }
         writeln!(out, "void halt() {{").unwrap();
         if intermediate.feature.contains("writer_def") {
@@ -712,8 +716,8 @@ impl Translator {
         if intermediate.feature.contains("read_white") {
             out.push_str(include_str!("fragments/read_white.c"));
         }
-        if intermediate.feature.contains("read_i32") {
-            out.push_str(include_str!("fragments/read_i32.c"));
+        if intermediate.feature.contains("read_int") {
+            out.push_str(include_str!("fragments/read_int.c"));
         }
         out.push_str(&intermediate.decl);
         out.push_str(&intermediate.global);
