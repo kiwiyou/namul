@@ -69,9 +69,9 @@ pub enum Pattern {
 
 pub fn parse_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
     alt((
-        parse_tuple_pattern,
-        parse_declaration.map(Pattern::Declaration),
         TokenKind::Identifier.map(Pattern::Ident),
+        parse_declaration.map(Pattern::Declaration),
+        parse_tuple_pattern,
     ))
     .parse_next(s)
 }
