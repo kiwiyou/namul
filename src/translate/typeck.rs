@@ -249,13 +249,13 @@ impl NameResolver {
         match expr {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => {
-                    self.block(parent.clone(), block);
+                    self.block(Rc::clone(&parent), block);
                 }
                 BlockExpression::If(if_) => {
-                    self.expression(parent.clone(), &if_.condition);
-                    self.block(parent.clone(), &if_.truthy);
+                    self.expression(Rc::clone(&parent), &if_.condition);
+                    self.block(Rc::clone(&parent), &if_.truthy);
                     if let Some(falsy) = &if_.falsy {
-                        self.block(parent.clone(), falsy);
+                        self.block(Rc::clone(&parent), falsy);
                     }
                 }
             },
@@ -263,25 +263,28 @@ impl NameResolver {
                 NonblockExpression::Literal(_) => {}
                 NonblockExpression::Path(_) => {}
                 NonblockExpression::Binary(binary) => {
-                    self.expression(parent.clone(), &binary.lhs);
-                    self.expression(parent.clone(), &binary.rhs);
+                    self.expression(Rc::clone(&parent), &binary.lhs);
+                    self.expression(Rc::clone(&parent), &binary.rhs);
                 }
                 NonblockExpression::Comparison(comparison) => {
-                    self.expression(parent.clone(), &comparison.first);
+                    self.expression(Rc::clone(&parent), &comparison.first);
                     for (_, rest) in comparison.chain.iter() {
-                        self.expression(parent.clone(), rest);
+                        self.expression(Rc::clone(&parent), rest);
                     }
                 }
                 NonblockExpression::Print(_) => {}
                 NonblockExpression::Select(select) => {
-                    self.expression(parent.clone(), &select.condition);
-                    self.expression(parent.clone(), &select.truthy);
-                    self.expression(parent.clone(), &select.falsy);
+                    self.expression(Rc::clone(&parent), &select.condition);
+                    self.expression(Rc::clone(&parent), &select.truthy);
+                    self.expression(Rc::clone(&parent), &select.falsy);
                 }
                 NonblockExpression::MakeTuple(make_tuple) => {
                     for arg in make_tuple.args.iter() {
-                        self.expression(parent.clone(), arg);
+                        self.expression(Rc::clone(&parent), arg);
                     }
+                }
+                NonblockExpression::Parentheses(expr) => {
+                    self.expression(Rc::clone(&parent), &expr);
                 }
             },
         }
@@ -477,6 +480,11 @@ impl TypeChecker {
                         args.push(self.expression(&arg));
                     }
                     TypeInference::Tuple(args).unify(&mut ty.borrow_mut())
+                }
+                NonblockExpression::Parentheses(expr) => {
+                    let expr = self.expression(&expr);
+                    let mut expr_ty = expr.borrow_mut();
+                    expr_ty.unify(&mut ty.borrow_mut());
                 }
             },
         };

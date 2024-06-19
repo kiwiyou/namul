@@ -1,5 +1,6 @@
 use winnow::{
-    combinator::{alt, delimited, opt, preceded, repeat, separated},
+    combinator::{alt, cut_err, delimited, opt, preceded, repeat, separated},
+    error::{StrContext, StrContextValue},
     seq, Located, PResult, Parser,
 };
 
@@ -19,6 +20,7 @@ pub enum Expression {
 
 #[derive(Debug, Clone)]
 pub enum NonblockExpression {
+    Parentheses(Box<Expression>),
     Literal(Literal),
     Path(Path),
     Binary(BinaryOperation),
@@ -30,7 +32,6 @@ pub enum NonblockExpression {
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
-        parse_make_tuple.map(NonblockExpression::MakeTuple),
         parse_select.map(NonblockExpression::Select),
         parse_logical.map(NonblockExpression::Binary),
         parse_comparison.map(NonblockExpression::Comparison),
@@ -39,17 +40,14 @@ pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpre
         parse_format_string.map(NonblockExpression::Print),
         parse_literal.map(NonblockExpression::Literal),
         parse_path.map(NonblockExpression::Path),
+        parse_make_tuple.map(NonblockExpression::MakeTuple),
+        parse_parentheses,
     ))
     .parse_next(s)
 }
 
 pub fn parse_expression(s: &mut Located<&str>) -> PResult<Expression> {
     alt((
-        delimited(
-            (TokenKind::PunctLeftParenthesis, opt(TokenKind::White)),
-            parse_expression,
-            (opt(TokenKind::White), TokenKind::PunctRightParenthesis),
-        ),
         parse_block_expression.map(Expression::Block),
         parse_nonblock_expression.map(Expression::Nonblock),
     ))
@@ -224,6 +222,10 @@ pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<BinaryOperation> {
 
 pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
     alt((
+        parse_make_tuple
+            .map(NonblockExpression::MakeTuple)
+            .map(Expression::Nonblock),
+        parse_parentheses.map(Expression::Nonblock),
         parse_format_string
             .map(NonblockExpression::Print)
             .map(Expression::Nonblock),
@@ -323,6 +325,9 @@ pub struct Select {
 pub fn parse_select(s: &mut Located<&str>) -> PResult<Select> {
     let operand = || {
         alt((
+            parse_select
+                .map(NonblockExpression::Select)
+                .map(Expression::Nonblock),
             parse_logical
                 .map(NonblockExpression::Binary)
                 .map(Expression::Nonblock),
@@ -339,7 +344,21 @@ pub fn parse_select(s: &mut Located<&str>) -> PResult<Select> {
         ))
     };
     seq!(
-        operand(),
+        alt((
+            parse_logical
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_comparison
+                .map(NonblockExpression::Comparison)
+                .map(Expression::Nonblock),
+            parse_add_sub
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_mul_div_mod
+                .map(NonblockExpression::Binary)
+                .map(Expression::Nonblock),
+            parse_term,
+        )),
         _: opt(TokenKind::White),
         _: TokenKind::PunctQuestionMark,
         _: opt(TokenKind::White),
@@ -372,4 +391,23 @@ pub fn parse_make_tuple(s: &mut Located<&str>) -> PResult<MakeTuple> {
         _: opt(TokenKind::White),
         _: TokenKind::PunctRightParenthesis,
     ).map(|(args, )| MakeTuple { args }).parse_next(s)
+}
+
+pub fn parse_parentheses(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    delimited(
+        (TokenKind::PunctLeftParenthesis, opt(TokenKind::White)),
+        cut_err(parse_expression)
+            .context(StrContext::Label("expression"))
+            .context(StrContext::Expected(StrContextValue::Description(
+                "expression",
+            ))),
+        (
+            opt(TokenKind::White),
+            cut_err(TokenKind::PunctRightParenthesis)
+                .context(StrContext::Label("parentheses expression"))
+                .context(StrContext::Expected(StrContextValue::CharLiteral('`'))),
+        ),
+    )
+    .map(|expr| NonblockExpression::Parentheses(Box::new(expr)))
+    .parse_next(s)
 }

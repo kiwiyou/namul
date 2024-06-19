@@ -668,6 +668,7 @@ impl Translator {
                 NonblockExpression::Print(format) => self.print(format),
                 NonblockExpression::Select(select) => self.select(select),
                 NonblockExpression::MakeTuple(make_tuple) => self.make_tuple(make_tuple),
+                NonblockExpression::Parentheses(expr) => self.expression(expr),
             },
         }
     }
