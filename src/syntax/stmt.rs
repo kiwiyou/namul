@@ -18,6 +18,7 @@ pub enum Statement {
     Expression(Expression),
     Assignment(Assignment),
     Repeat(Repeat),
+    While(While),
 }
 
 pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
@@ -29,6 +30,7 @@ pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
         )
         .map(Statement::Input),
         parse_repeat.map(Statement::Repeat),
+        parse_while.map(Statement::While),
         terminated(
             parse_nonblock_expression,
             (opt(TokenKind::White), TokenKind::PunctSemicolon),
@@ -66,14 +68,28 @@ pub fn parse_assignment(s: &mut Located<&str>) -> PResult<Assignment> {
 pub enum Pattern {
     Ident(Token),
     Declaration(Declaration),
+    Tuple(Vec<Pattern>),
 }
 
 pub fn parse_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
     alt((
+        parse_tuple_pattern,
         parse_declaration.map(Pattern::Declaration),
         TokenKind::Identifier.map(Pattern::Ident),
     ))
     .parse_next(s)
+}
+
+pub fn parse_tuple_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
+    seq!(
+        _: TokenKind::PunctLeftParenthesis,
+        _: opt(TokenKind::White),
+        separated(2.., parse_pattern, (opt(TokenKind::White), TokenKind::PunctComma, opt(TokenKind::White))),
+        _: opt(TokenKind::White),
+        _: opt(TokenKind::PunctComma),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctRightParenthesis,
+    ).map(|(args, )| Pattern::Tuple(args)).parse_next(s)
 }
 
 #[derive(Debug, Clone)]
@@ -100,15 +116,9 @@ pub fn parse_repeat(s: &mut Located<&str>) -> PResult<Repeat> {
         _: opt(TokenKind::White),
         parse_expression,
         _: opt(TokenKind::White),
-        alt((
-            parse_block,
-            parse_input_parser.map(|parser| Block { statement: vec![Statement::Input(parser)], result: None })
-        )),
+        parse_block,
     )
-    .map(|(times, expr)| Repeat {
-        times,
-        block: expr,
-    })
+    .map(|(times, expr)| Repeat { times, block: expr })
     .parse_next(s)
 }
 
@@ -141,5 +151,23 @@ pub fn parse_input_arg(s: &mut Located<&str>) -> PResult<(Token, Token)> {
         TokenKind::White,
         TokenKind::Identifier,
     )
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct While {
+    pub condition: Expression,
+    pub block: Block,
+}
+
+pub fn parse_while(s: &mut Located<&str>) -> PResult<While> {
+    seq!(
+        _: TokenKind::KeywordWhile,
+        _: opt(TokenKind::White),
+        parse_expression,
+        _: opt(TokenKind::White),
+        parse_block,
+    )
+    .map(|(condition, block)| While { condition, block })
     .parse_next(s)
 }

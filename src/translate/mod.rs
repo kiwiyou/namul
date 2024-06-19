@@ -1,12 +1,11 @@
-use typeck::{Scope, TypeChecker, TypeDeduction, TypeInstance};
+use typeck::{NameResolver, Scope, TypeChecker, TypeInference, TypeInstance};
 
 use crate::syntax::{
     expr::{
-        BinaryOperation, Block, BlockExpression, Comparison, Expression, If, NonblockExpression,
-        Select,
+        BinaryOperation, Block, BlockExpression, Comparison, Expression, If, MakeTuple,
+        NonblockExpression, Select,
     },
     format::{FormatFragment, FormatString},
-    item::Type,
     literal::Literal,
     path::Path,
     stmt::{Pattern, Statement},
@@ -18,9 +17,9 @@ pub mod typeck;
 
 pub struct Translator {
     scopes: Vec<Rc<RefCell<Scope>>>,
-    expr_types: Vec<TypeDeduction>,
-    current: usize,
-    current_expr: usize,
+    inference: Vec<Rc<RefCell<TypeInference>>>,
+    current_scope: usize,
+    current_infer: usize,
     counter: usize,
 }
 
@@ -35,12 +34,30 @@ pub struct Intermediate {
 }
 
 impl Translator {
-    pub fn current_scope(&self) -> Rc<RefCell<Scope>> {
-        Rc::clone(&self.scopes[self.current])
+    pub fn synthesize(&mut self, inference: &TypeInference) -> Option<TypeInstance> {
+        match inference {
+            TypeInference::Exact(exact) => Some(exact.clone()),
+            TypeInference::Integer => Some(TypeInstance::I32),
+            TypeInference::Unknown => None,
+            TypeInference::Never => None,
+            TypeInference::Tuple(tuple) => {
+                let mut args = vec![];
+                for arg in tuple.iter() {
+                    args.push(self.synthesize(&arg.borrow())?);
+                }
+                let id = self.counter;
+                self.counter += 1;
+                Some(TypeInstance::Tuple { id, args })
+            }
+        }
     }
 
-    pub fn current_expr_type(&self) -> &TypeDeduction {
-        &self.expr_types[self.current_expr]
+    pub fn current_scope(&self) -> Rc<RefCell<Scope>> {
+        Rc::clone(&self.scopes[self.current_scope])
+    }
+
+    pub fn current_infer(&self) -> Rc<RefCell<TypeInference>> {
+        Rc::clone(&self.inference[self.current_infer])
     }
 
     pub fn path(&mut self, path: &Path) -> Intermediate {
@@ -49,7 +66,8 @@ impl Translator {
             Path::Simple(ident) => {
                 let scope = scope.borrow();
                 let var = scope.get_var(&ident.content).unwrap();
-                let Some(ty) = self.current_expr_type().deduce() else {
+                let current_infer = self.current_infer();
+                let Some(ty) = self.synthesize(&current_infer.borrow()) else {
                     panic!("Could not deduce type of {}.", ident.content);
                 };
                 Intermediate {
@@ -62,15 +80,16 @@ impl Translator {
                 }
             }
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         result
     }
 
     pub fn binary(&mut self, binary: &BinaryOperation) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let lhs = self.expression(&binary.lhs);
         let rhs = self.expression(&binary.rhs);
         let result = match (lhs.ty, binary.operator.kind, rhs.ty) {
@@ -117,10 +136,11 @@ impl Translator {
     }
 
     pub fn literal(&mut self, literal: &Literal) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let result = match literal {
             Literal::Decimal(decimal) => Intermediate {
                 ty,
@@ -147,10 +167,11 @@ impl Translator {
     }
 
     pub fn comparison(&mut self, comparison: &Comparison) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
@@ -217,10 +238,11 @@ impl Translator {
     }
 
     pub fn print(&mut self, format: &FormatString) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let mut feature = HashSet::new();
         let mut effect = String::new();
         feature.insert("writer_def");
@@ -242,10 +264,10 @@ impl Translator {
                     let Some(var) = scope.get_var(&ident.content) else {
                         panic!("Could not print undefined variable {}.", ident.content);
                     };
-                    let Some(ty) = var.ty.deduce() else {
-                        panic!("Could not deduce type of {}.", ident.content);
+                    let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
                     };
-                    match ty {
+                    match var_ty {
                         TypeInstance::I32 => {
                             feature.insert("write_i32");
                             writeln!(effect, "write_i32({});", var.mangle).unwrap();
@@ -266,10 +288,11 @@ impl Translator {
     }
 
     pub fn if_(&mut self, if_: &If) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
@@ -338,10 +361,11 @@ impl Translator {
     }
 
     pub fn select(&mut self, select: &Select) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        self.current_expr += 1;
+        self.current_infer += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
@@ -385,20 +409,63 @@ impl Translator {
         }
     }
 
+    pub fn make_tuple(&mut self, make_tuple: &MakeTuple) -> Intermediate {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.current_infer += 1;
+        let mut feature = HashSet::new();
+        let mut decl = String::new();
+        let mut global = String::new();
+        let mut effect = String::new();
+        let ty_mapped = ty.mapped();
+        writeln!(decl, "typedef struct {ty_mapped} {ty_mapped};").unwrap();
+        let mut definition = String::new();
+        writeln!(definition, "struct {ty_mapped} {{").unwrap();
+        let mut construct = String::new();
+        let mt_id = self.counter;
+        self.counter += 1;
+        write!(construct, "{ty_mapped} mt{mt_id} = {{").unwrap();
+        for (i, arg) in make_tuple.args.iter().enumerate() {
+            let arg = self.expression(arg);
+            feature.extend(arg.feature);
+            decl.push_str(&arg.decl);
+            global.push_str(&arg.global);
+            effect.push_str(&arg.effect);
+            construct.push_str(&arg.immediate);
+            construct.push_str(", ");
+            writeln!(definition, "{} m{};", arg.ty.mapped(), i).unwrap();
+        }
+        writeln!(construct, "}};").unwrap();
+        effect.push_str(&construct);
+        writeln!(definition, "}};").unwrap();
+        global.push_str(&definition);
+        Intermediate {
+            ty,
+            feature,
+            decl,
+            global,
+            effect,
+            immediate: format!("mt{mt_id}"),
+        }
+    }
+
     pub fn block(&mut self, block: &Block) -> Intermediate {
-        let Some(ty) = self.current_expr_type().deduce() else {
+        let current_infer = self.current_infer();
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type");
         };
-        self.current_expr += 1;
-        let result = self.current;
-        self.current += 1;
+        self.current_infer += 1;
+        let result = self.current_scope;
+        self.current_scope += 1;
         let mut feature = HashSet::new();
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
         let mut immediate = String::new();
         for statement in block.statement.iter() {
-            self.current += 1;
+            self.current_scope += 1;
             match statement {
                 Statement::Nop => {}
                 Statement::Input(parser) => {
@@ -429,40 +496,74 @@ impl Translator {
                     effect.push_str(&expr.effect);
                 }
                 Statement::Assignment(assignment) => {
-                    let scope = self.current_scope();
-                    let scope = scope.borrow();
-                    let rhs = self.expression(&assignment.rhs);
+                    self.current_scope -= 1;
+                    let mut rhs = self.expression(&assignment.rhs);
+                    self.current_scope += 1;
                     feature.extend(rhs.feature);
                     decl.push_str(&rhs.decl);
                     global.push_str(&rhs.global);
                     effect.push_str(&rhs.effect);
+                    let scope = self.current_scope();
+                    let scope = scope.borrow();
                     match &assignment.lhs {
                         Pattern::Ident(ident) => {
-                            let Some(var) = scope.get_var(&ident.content) else {
-                                panic!("Could not assign to undefined variable {}.", ident.content);
-                            };
+                            let var = scope.get_var(&ident.content).unwrap();
                             writeln!(effect, "{} = {};", var.mangle, rhs.immediate).unwrap();
                         }
-                        Pattern::Declaration(declaration) => match &declaration.ty {
-                            Type::Path(path) => {
-                                let Some(ty) = scope.get_ty(&path.ident.content) else {
-                                    panic!(
-                                        "Could not find type `{}` in scope.",
-                                        path.ident.content
-                                    );
-                                };
-                                let var = scope.get_var(&declaration.ident.content).unwrap();
-                                writeln!(
-                                    effect,
-                                    "{} {} = {};",
-                                    ty.mapped(),
-                                    var.mangle,
-                                    rhs.immediate
-                                )
-                                .unwrap();
+                        Pattern::Declaration(declaration) => {
+                            let var = scope.get_var(&declaration.ident.content).unwrap();
+                            let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                                panic!("Could not deduce type.");
+                            };
+                            writeln!(
+                                effect,
+                                "{} {} = {};",
+                                var_ty.mapped(),
+                                var.mangle,
+                                rhs.immediate
+                            )
+                            .unwrap();
+                        }
+                        Pattern::Tuple(args) => {
+                            fn assign_pattern(
+                                translator: &mut Translator,
+                                effect: &mut String,
+                                scope: &Scope,
+                                rhs: &mut String,
+                                args: &[Pattern],
+                            ) {
+                                for (i, arg) in args.iter().enumerate() {
+                                    let len = rhs.len();
+                                    write!(rhs, ".m{}", i).unwrap();
+                                    match arg {
+                                        Pattern::Ident(ident) => {
+                                            let var = scope.get_var(&ident.content).unwrap();
+                                            writeln!(effect, "{} = {};", var.mangle, rhs).unwrap();
+                                        }
+                                        Pattern::Declaration(declaration) => {
+                                            let var =
+                                                scope.get_var(&declaration.ident.content).unwrap();
+                                            let Some(var_ty) =
+                                                translator.synthesize(&var.ty.borrow())
+                                            else {
+                                                panic!("Could not deduce type.");
+                                            };
+                                            writeln!(
+                                                effect,
+                                                "{} {} = {};",
+                                                var_ty.mapped(),
+                                                var.mangle,
+                                                rhs
+                                            )
+                                            .unwrap();
+                                        }
+                                        Pattern::Tuple(_) => todo!(),
+                                    }
+                                    rhs.truncate(len);
+                                }
                             }
-                            Type::Tuple(_) => todo!(),
-                        },
+                            assign_pattern(self, &mut effect, &scope, &mut rhs.immediate, &args);
+                        }
                     }
                 }
                 Statement::Repeat(repeat) => {
@@ -488,6 +589,27 @@ impl Translator {
                     effect.push_str(&block.effect);
                     writeln!(effect, "}}").unwrap();
                 }
+                Statement::While(while_) => {
+                    let condition = self.expression(&while_.condition);
+                    feature.extend(condition.feature);
+                    decl.push_str(&condition.decl);
+                    global.push_str(&condition.global);
+                    if condition.ty != TypeInstance::Bool {
+                        panic!(
+                            "Could not repeat while condition of type `{}`",
+                            condition.ty
+                        );
+                    }
+                    writeln!(effect, "for(;;) {{").unwrap();
+                    effect.push_str(&condition.effect);
+                    writeln!(effect, "if (!{}) break;", condition.immediate).unwrap();
+                    let block = self.block(&while_.block);
+                    feature.extend(block.feature);
+                    decl.push_str(&block.decl);
+                    global.push_str(&block.global);
+                    effect.push_str(&block.effect);
+                    writeln!(effect, "}}").unwrap();
+                }
             }
         }
         if let Some(result) = block.result.as_ref().map(|expr| self.expression(expr)) {
@@ -497,7 +619,7 @@ impl Translator {
             effect.push_str(&result.effect);
             immediate = result.immediate;
         }
-        self.current = result;
+        self.current_scope = result;
         Intermediate {
             ty,
             feature,
@@ -521,18 +643,21 @@ impl Translator {
                 NonblockExpression::Comparison(comparison) => self.comparison(comparison),
                 NonblockExpression::Print(format) => self.print(format),
                 NonblockExpression::Select(select) => self.select(select),
+                NonblockExpression::MakeTuple(make_tuple) => self.make_tuple(make_tuple),
             },
         }
     }
 
     pub fn translate(program: &Program) -> String {
-        let type_checker = TypeChecker::run(program);
+        let name_resolver = NameResolver::new(program);
+        let mut type_checker = TypeChecker::from_name_resolver(name_resolver);
+        type_checker.run(program);
 
         let mut translator = Translator {
             scopes: type_checker.scopes,
-            expr_types: type_checker.expr_types,
-            current: 0,
-            current_expr: 0,
+            inference: type_checker.inference,
+            current_scope: 0,
+            current_infer: 0,
             counter: 0,
         };
 
@@ -570,6 +695,7 @@ impl Translator {
             out.push_str(include_str!("fragments/read_i32.c"));
         }
         out.push_str(&intermediate.decl);
+        out.push_str(&intermediate.global);
         writeln!(out, "int main;").unwrap();
         writeln!(out, "int __libc_start_main() {{").unwrap();
         if intermediate.feature.contains("writer_def") {
@@ -585,7 +711,6 @@ impl Translator {
         out.push_str(&intermediate.effect);
         writeln!(out, "halt();").unwrap();
         writeln!(out, "}}").unwrap();
-        out.push_str(&intermediate.global);
         out
     }
 }

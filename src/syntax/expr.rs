@@ -1,5 +1,5 @@
 use winnow::{
-    combinator::{alt, delimited, opt, preceded, repeat},
+    combinator::{alt, delimited, opt, preceded, repeat, separated},
     seq, Located, PResult, Parser,
 };
 
@@ -25,10 +25,12 @@ pub enum NonblockExpression {
     Comparison(Comparison),
     Print(FormatString),
     Select(Select),
+    MakeTuple(MakeTuple),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
+        parse_make_tuple.map(NonblockExpression::MakeTuple),
         parse_select.map(NonblockExpression::Select),
         parse_logical.map(NonblockExpression::Binary),
         parse_comparison.map(NonblockExpression::Comparison),
@@ -353,4 +355,21 @@ pub fn parse_select(s: &mut Located<&str>) -> PResult<Select> {
         falsy: Box::new(falsy),
     })
     .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct MakeTuple {
+    pub args: Vec<Expression>,
+}
+
+pub fn parse_make_tuple(s: &mut Located<&str>) -> PResult<MakeTuple> {
+    seq!(
+        _: TokenKind::PunctLeftParenthesis,
+        _: opt(TokenKind::White),
+        separated(2.., parse_expression, (opt(TokenKind::White), TokenKind::PunctComma, opt(TokenKind::White))),
+        _: opt(TokenKind::White),
+        _: opt(TokenKind::PunctComma),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctRightParenthesis,
+    ).map(|(args, )| MakeTuple { args }).parse_next(s)
 }

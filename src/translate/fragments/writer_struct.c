@@ -1,4 +1,4 @@
-#define WRITER_BUF 65536
+#define WRITER_BUF 32768
 typedef struct {
     char buf[WRITER_BUF];
     int back;

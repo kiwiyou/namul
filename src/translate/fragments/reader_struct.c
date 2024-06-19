@@ -1,4 +1,4 @@
-#define READER_BUF 65536
+#define READER_BUF 32768
 typedef struct {
     char buf[READER_BUF];
     int off, end;
