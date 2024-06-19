@@ -24,11 +24,7 @@ pub enum Statement {
 pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
     alt((
         TokenKind::PunctSemicolon.value(Statement::Nop),
-        terminated(
-            parse_input_parser,
-            (opt(TokenKind::White), TokenKind::PunctSemicolon),
-        )
-        .map(Statement::Input),
+        parse_input_parser.map(Statement::Input),
         parse_repeat.map(Statement::Repeat),
         parse_while.map(Statement::While),
         terminated(

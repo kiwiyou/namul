@@ -704,11 +704,11 @@ impl Translator {
         if intermediate.feature.contains("write_int") {
             out.push_str(include_str!("fragments/write_int.c"));
         }
-        writeln!(out, "void halt() {{").unwrap();
+        writeln!(out, "_Noreturn void halt() {{").unwrap();
         if intermediate.feature.contains("writer_def") {
             writeln!(out, "flush();").unwrap();
         }
-        writeln!(out, "_Exit(0);").unwrap();
+        writeln!(out, "_exit(0);").unwrap();
         writeln!(out, "}}").unwrap();
         if intermediate.feature.contains("reader_def") {
             out.push_str(include_str!("fragments/reader_struct.c"));
