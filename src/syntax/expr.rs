@@ -408,17 +408,8 @@ pub fn parse_make_tuple(s: &mut Located<&str>) -> PResult<MakeTuple> {
 pub fn parse_parentheses(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     delimited(
         (TokenKind::PunctLeftParenthesis, opt(TokenKind::White)),
-        cut_err(parse_expression)
-            .context(StrContext::Label("expression"))
-            .context(StrContext::Expected(StrContextValue::Description(
-                "expression",
-            ))),
-        (
-            opt(TokenKind::White),
-            cut_err(TokenKind::PunctRightParenthesis)
-                .context(StrContext::Label("parentheses expression"))
-                .context(StrContext::Expected(StrContextValue::CharLiteral('`'))),
-        ),
+        parse_expression,
+        (opt(TokenKind::White), TokenKind::PunctRightParenthesis),
     )
     .map(|expr| NonblockExpression::Parentheses(Box::new(expr)))
     .parse_next(s)
