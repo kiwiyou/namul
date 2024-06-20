@@ -93,6 +93,7 @@ pub fn parse_declaration(s: &mut Located<&str>) -> PResult<Declaration> {
 
 #[derive(Debug, Clone)]
 pub struct Repeat {
+    pub var: Option<Token>,
     pub times: Expression,
     pub block: Block,
 }
@@ -100,12 +101,13 @@ pub struct Repeat {
 pub fn parse_repeat(s: &mut Located<&str>) -> PResult<Repeat> {
     seq!(
         _: TokenKind::KeywordRep,
+        opt(delimited(opt(TokenKind::White), TokenKind::Identifier, (opt(TokenKind::White), TokenKind::PunctComma))),
         _: opt(TokenKind::White),
         parse_expression,
         _: opt(TokenKind::White),
         parse_block,
     )
-    .map(|(times, expr)| Repeat { times, block: expr })
+    .map(|(var, times, expr)| Repeat { var, times, block: expr })
     .parse_next(s)
 }
 

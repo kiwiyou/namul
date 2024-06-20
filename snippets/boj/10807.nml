@@ -1,0 +1,11 @@
+|i32 N|
+[i32; 100] A;
+rep i, N {
+    |A[i]|
+}
+|i32 v|
+i32 count = 0;
+rep i, N {
+    count += A[i] == v ? 1 : 0;
+}
+`$count`;

@@ -1,6 +1,0 @@
-|i32 a, i32 b|
-if a == b {
-    `Equal`;
-} else {
-    `Not Equal`;
-};

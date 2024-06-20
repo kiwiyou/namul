@@ -51,6 +51,11 @@ impl TypeConstructor {
             Statement::Repeat(repeat) => {
                 let len = self.stack.len();
                 self.expression(&repeat.times);
+                if repeat.var.is_some() {
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(scope);
+                }
                 self.block(&repeat.block);
                 self.stack.truncate(len);
             }

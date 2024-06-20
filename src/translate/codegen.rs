@@ -596,6 +596,16 @@ impl Codegen {
                     times.immediate
                 )
                 .unwrap();
+                if let Some(ident) = &repeat.var {
+                    let scope = Rc::clone(&self.scopes[self.last_scope]);
+                    self.last_scope += 1;
+                    self.stack.push(Rc::clone(&scope));
+                    let var = scope.borrow().get_var(&ident.content).unwrap();
+                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
+                    };
+                    self.define_var(&mut effect, &ty, &var.mangle, "i");
+                }
                 let block = self.block(&repeat.block);
                 self.stack.truncate(len);
                 decl.push_str(&block.decl);

@@ -50,7 +50,20 @@ impl NameResolver {
             }
             Statement::Expression(expr) => self.expression(parent, expr),
             Statement::Repeat(repeat) => {
-                let scope = self.expression(Rc::clone(&parent), &repeat.times);
+                let mut scope = self.expression(Rc::clone(&parent), &repeat.times);
+                if let Some(ident) = &repeat.var {
+                    scope = Rc::new(RefCell::new(Scope::with_parent(scope)));
+                    self.scopes.push(Rc::clone(&scope));
+                    let id = self.var_id;
+                    self.var_id += 1;
+                    scope.borrow_mut().var.insert(
+                        ident.content.clone(),
+                        Variable {
+                            mangle: format!("_{}_{id}", ident.content),
+                            ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                        },
+                    );
+                }
                 self.block(scope, &repeat.block);
                 parent
             }

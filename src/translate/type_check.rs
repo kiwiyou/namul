@@ -52,7 +52,14 @@ impl TypeChecker {
             }
             Statement::Repeat(repeat) => {
                 let len = self.stack.len();
-                self.expression(&repeat.times);
+                let ty = self.expression(&repeat.times);
+                if let Some(ident) = &repeat.var {
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(Rc::clone(&scope));
+                    let var = scope.borrow().get_var(&ident.content).unwrap();
+                    TypeInference::unify(&ty, &var.ty);
+                }
                 self.block(&repeat.block);
                 self.stack.truncate(len);
             }
