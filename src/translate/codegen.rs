@@ -8,10 +8,10 @@ use std::{
 use crate::syntax::{
     expression::{
         Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
-        CompoundAssignment, Declaration, Expression, If, Invocation, MakeTuple, NonblockExpression,
-        Place, Print, Select,
+        CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeTuple,
+        NonblockExpression, Place, Print, Select,
     },
-    format::{FormatFragment, FormatString},
+    format::FormatFragment,
     literal::Literal,
     path::Path,
     statement::{Pattern, Statement},
@@ -80,6 +80,10 @@ impl Codegen {
                     result: Box::new(result),
                 })
             }
+            TypeInference::Array { element, len } => Some(TypeInstance::Array {
+                element: Box::new(self.synthesize(&element.borrow())?),
+                len: *len,
+            }),
         }
     }
 
@@ -145,16 +149,17 @@ impl Codegen {
                 if ty != TypeInstance::Never {
                     let id = self.var_id;
                     self.var_id += 1;
-                    writeln!(
-                        effect,
-                        "{} b{id} = {} {} {};",
-                        ty.mapped(),
-                        lhs.immediate,
-                        binary.operator.content,
-                        rhs.immediate
-                    )
-                    .unwrap();
-                    immediate = format!("b{id}");
+                    let ident = format!("b{id}");
+                    self.define_var(
+                        &mut effect,
+                        &ty,
+                        &ident,
+                        &format!(
+                            "{} {} {}",
+                            lhs.immediate, binary.operator.content, rhs.immediate
+                        ),
+                    );
+                    immediate = ident;
                 }
             }
             (l, _, r) => panic!(
@@ -211,7 +216,6 @@ impl Codegen {
         let mut effect = String::new();
         let id = self.var_id;
         self.var_id += 1;
-        writeln!(effect, "char cmp{id} = 1;").unwrap();
         let first = self.expression(&comparison.first);
         decl.push_str(&first.decl);
         global.push_str(&first.decl);
@@ -220,14 +224,16 @@ impl Codegen {
         let mut prev = first.immediate;
         let mut close = 0;
         let mut is_never = false;
-        for (op, next) in comparison.chain.iter() {
+        for (i, (op, next)) in comparison.chain.iter().enumerate() {
             let next = self.expression(next);
             if is_never {
                 continue;
             }
             decl.push_str(&next.decl);
             global.push_str(&next.decl);
-            writeln!(effect, "if (cmp{id}) {{").unwrap();
+            if i > 0 {
+                writeln!(effect, "if (cmp{id}) {{").unwrap();
+            }
             effect.push_str(&next.effect);
             match (&prev_ty, op.kind, &next.ty) {
                 (TypeInstance::Never, _, _) | (_, _, TypeInstance::Never) => {
@@ -238,6 +244,9 @@ impl Codegen {
                     _,
                     TypeInstance::I32 | TypeInstance::I64,
                 ) => {
+                    if i == 0 {
+                        write!(effect, "char ").unwrap();
+                    }
                     writeln!(
                         effect,
                         "cmp{id} = {prev} {} {};",
@@ -251,6 +260,9 @@ impl Codegen {
                     | TokenKind::PunctExclamationMarkEqualsSign,
                     TypeInstance::Bool,
                 ) => {
+                    if i == 0 {
+                        write!(effect, "char ").unwrap();
+                    }
                     writeln!(
                         effect,
                         "cmp{id} = {prev} {} {};",
@@ -267,10 +279,12 @@ impl Codegen {
             prev_ty = next.ty;
             prev = next.immediate;
         }
-        for _ in 0..close {
+        for _ in 1..close {
             effect.push('}');
         }
-        effect.push('\n');
+        if close > 1 {
+            effect.push('\n');
+        }
         Intermediate {
             ty,
             decl,
@@ -394,8 +408,9 @@ impl Codegen {
         } else if let Some(falsy) = &if_.falsy {
             let id = self.var_id;
             self.var_id += 1;
+            let ident = format!("if{id}");
             if ty != TypeInstance::Never {
-                writeln!(effect, "{} if{id};", ty.mapped()).unwrap();
+                writeln!(effect, "{};", ty.declare(&ident)).unwrap();
             }
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
             let truthy = self.block(&if_.truthy);
@@ -403,7 +418,7 @@ impl Codegen {
             global.push_str(&truthy.global);
             effect.push_str(&truthy.effect);
             if ty != TypeInstance::Never {
-                writeln!(effect, "if{id} = {};", truthy.immediate).unwrap();
+                self.assign_var(&mut effect, &ty, &ident, &truthy.immediate);
             }
             writeln!(effect, "}} else {{").unwrap();
             let falsy = self.block(falsy);
@@ -411,7 +426,7 @@ impl Codegen {
             global.push_str(&falsy.global);
             effect.push_str(&falsy.effect);
             if ty != TypeInstance::Never {
-                writeln!(effect, "if{id} = {};", falsy.immediate).unwrap();
+                self.assign_var(&mut effect, &ty, &ident, &falsy.immediate);
             }
             writeln!(effect, "}}").unwrap();
             immediate = if ty == TypeInstance::Never {
@@ -454,8 +469,9 @@ impl Codegen {
         effect.push_str(&condition.effect);
         let id = self.var_id;
         self.var_id += 1;
+        let ident = format!("if{id}");
         if ty != TypeInstance::Never {
-            writeln!(effect, "{} if{id};", ty.mapped()).unwrap();
+            writeln!(effect, "{};", ty.declare(&ident)).unwrap();
         }
         writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
         let truthy = self.expression(&select.truthy);
@@ -464,7 +480,7 @@ impl Codegen {
         global.push_str(&truthy.global);
         effect.push_str(&truthy.effect);
         if ty != TypeInstance::Never {
-            writeln!(effect, "if{id} = {};", truthy.immediate).unwrap();
+            self.assign_var(&mut effect, &ty, &ident, &truthy.immediate);
         }
         writeln!(effect, "}} else {{").unwrap();
         let falsy = self.expression(&select.falsy);
@@ -473,13 +489,13 @@ impl Codegen {
         global.push_str(&falsy.global);
         effect.push_str(&falsy.effect);
         if ty != TypeInstance::Never {
-            writeln!(effect, "if{id} = {};", falsy.immediate).unwrap();
+            self.assign_var(&mut effect, &ty, &ident, &falsy.immediate);
         }
         writeln!(effect, "}}").unwrap();
         let immediate = if ty == TypeInstance::Never {
             "".into()
         } else {
-            format!("if{id}")
+            ident
         };
         Intermediate {
             ty,
@@ -554,23 +570,8 @@ impl Codegen {
                 let scope = Rc::clone(&self.scopes[self.last_scope]);
                 self.last_scope += 1;
                 self.stack.push(Rc::clone(&scope));
-                let scope = scope.borrow();
-                for (ty, ident) in parser.arg.iter() {
-                    let Some(ty) = scope.get_ty(&ty.content) else {
-                        panic!("Could not find type `{}` in scope.", ty.content);
-                    };
-                    let ty = self.synthesize(&ty.borrow()).unwrap();
-                    let getter = match ty {
-                        TypeInstance::I32 | TypeInstance::I64 => {
-                            self.feature.insert("reader_def");
-                            self.feature.insert("read_white");
-                            self.feature.insert("read_int");
-                            "read_int()"
-                        }
-                        _ => panic!("Could not find parser for type `{ty}`."),
-                    };
-                    let var = scope.get_var(&ident.content).unwrap();
-                    writeln!(effect, "{} {} = {};", ty.mapped(), var.mangle, getter).unwrap();
+                for arg in parser.arg.iter() {
+                    self.assignee_input(&mut decl, &mut global, &mut effect, arg);
                 }
             }
             Statement::Expression(expr) => {
@@ -638,8 +639,8 @@ impl Codegen {
                 };
                 let scope = Rc::clone(&self.scopes[self.last_scope]);
                 self.last_scope += 1;
-                write!(decl, "{} {}(", result.mapped(), var.mangle).unwrap();
-                write!(global, "{} {}(", result.mapped(), var.mangle).unwrap();
+                write!(decl, "{}(", &result.declare(&var.mangle)).unwrap();
+                write!(global, "{}(", &result.declare(&var.mangle)).unwrap();
                 for (i, (arg, ty)) in function.args.iter().zip(args.iter()).enumerate() {
                     if i > 0 {
                         decl.push_str(", ");
@@ -651,10 +652,10 @@ impl Codegen {
                         Pattern::Declaration(declaration) => {
                             let scope = scope.borrow();
                             let var = scope.get_var(&declaration.ident.content).unwrap();
-                            write!(global, "{} {}", ty.mapped(), var.mangle).unwrap();
+                            writeln!(global, "{};", ty.declare(&var.mangle)).unwrap();
                         }
                         Pattern::Tuple(_) => {
-                            write!(decl, "{} a{i}", ty.mapped()).unwrap();
+                            writeln!(decl, "{};", ty.declare(&format!("a{i}"))).unwrap();
                         }
                     }
                 }
@@ -751,6 +752,7 @@ impl Codegen {
                 NonblockExpression::CompoundAssignment(compound) => {
                     self.compound_assignment(compound)
                 }
+                NonblockExpression::Index(index) => self.index(index),
             },
         }
     }
@@ -783,6 +785,9 @@ impl Codegen {
         writeln!(out, "// namul 0.0.0").unwrap();
         writeln!(out, "#include <stdint.h>").unwrap();
         writeln!(out, "#include <unistd.h>").unwrap();
+        if translator.feature.contains("memcpy") {
+            out.push_str(include_str!("fragments/memcpy.c"));
+        }
         if translator.feature.contains("writer_def") {
             out.push_str(include_str!("fragments/writer_struct.c"));
         }
@@ -840,14 +845,17 @@ impl Codegen {
             match arg {
                 Pattern::Ident(ident) => {
                     let var = scope.get_var(&ident.content).unwrap();
-                    writeln!(effect, "{} = {};", var.mangle, rhs).unwrap();
+                    let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
+                    };
+                    self.assign_var(effect, &var_ty, &var.mangle, &rhs);
                 }
                 Pattern::Declaration(declaration) => {
                     let var = scope.get_var(&declaration.ident.content).unwrap();
                     let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    writeln!(effect, "{} {} = {};", var_ty.mapped(), var.mangle, rhs).unwrap();
+                    self.define_var(effect, &var_ty, &var.mangle, &rhs);
                 }
                 Pattern::Tuple(_) => todo!(),
             }
@@ -872,11 +880,8 @@ impl Codegen {
         let mut call = String::new();
         let id = self.var_id;
         self.var_id += 1;
-        if ty == TypeInstance::Never {
-            write!(call, "{}(", callee.immediate).unwrap();
-        } else {
-            write!(call, "{} inv{id} = {}(", ty.mapped(), callee.immediate).unwrap();
-        }
+        let ident = format!("inv{id}");
+        write!(call, "{}(", callee.immediate).unwrap();
         for (i, arg) in invocation.args.iter().enumerate() {
             if i > 0 {
                 call.push_str(", ");
@@ -889,11 +894,15 @@ impl Codegen {
         }
         self.stack.truncate(len);
         writeln!(call, ");").unwrap();
-        effect.push_str(&call);
+        if ty == TypeInstance::Never {
+            effect.push_str(&call);
+        } else {
+            self.define_var(&mut effect, &ty, &ident, &call);
+        }
         let immediate = if ty == TypeInstance::Never {
             "".into()
         } else {
-            format!("inv{id}")
+            ident
         };
         Intermediate {
             ty,
@@ -919,7 +928,7 @@ impl Codegen {
         let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
             panic!("Could not deduce type.");
         };
-        writeln!(effect, "{} {};", var_ty.mapped(), var.mangle).unwrap();
+        writeln!(effect, "{};", &var_ty.declare(&var.mangle)).unwrap();
         Intermediate {
             ty,
             decl: "".into(),
@@ -937,23 +946,38 @@ impl Codegen {
         self.last_infer += 1;
         let mut effect = String::new();
         let mut rhs = self.expression(&assignment.rhs);
+        let mut decl = rhs.decl;
+        let mut global = rhs.global;
         effect.push_str(&rhs.effect);
         let scope = Rc::clone(&self.scopes[self.last_scope]);
         self.last_scope += 1;
         self.stack.push(Rc::clone(&scope));
         if rhs.ty != TypeInstance::Never {
-            self.assignee(&mut effect, &mut rhs.immediate, &assignment.lhs);
+            self.assignee(
+                &mut decl,
+                &mut global,
+                &mut effect,
+                &mut rhs.immediate,
+                &assignment.lhs,
+            );
         }
         Intermediate {
             ty,
-            decl: rhs.decl,
-            global: rhs.global,
+            decl,
+            global,
             effect,
             immediate: "".into(),
         }
     }
 
-    fn assignee(&mut self, effect: &mut String, immediate: &mut String, assignee: &Assignee) {
+    fn assignee(
+        &mut self,
+        decl: &mut String,
+        global: &mut String,
+        effect: &mut String,
+        immediate: &mut String,
+        assignee: &Assignee,
+    ) {
         let scope = Rc::clone(&self.stack.last().unwrap());
         match assignee {
             Assignee::Declaration(declaration) => {
@@ -961,21 +985,126 @@ impl Codegen {
                 let Some(ty) = self.synthesize(&var.ty.borrow()) else {
                     panic!("Could not deduce type.");
                 };
-                writeln!(effect, "{} {} = {};", ty.mapped(), var.mangle, immediate).unwrap();
+                self.define_var(effect, &ty, &var.mangle, &immediate);
             }
             Assignee::Path(path) => match path {
                 Path::Simple(simple) => {
                     let var = scope.borrow().get_var(&simple.content).unwrap();
-                    writeln!(effect, "{} = {};", var.mangle, immediate).unwrap();
+                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
+                    };
+                    self.assign_var(effect, &ty, &var.mangle, &immediate);
                 }
             },
             Assignee::Tuple(args) => {
                 let len = immediate.len();
                 for (i, arg) in args.iter().enumerate() {
                     write!(immediate, ".m{i}").unwrap();
-                    self.assignee(effect, immediate, arg);
+                    self.assignee(decl, global, effect, immediate, arg);
                     immediate.truncate(len);
                 }
+            }
+            Assignee::Index(index) => {
+                let len = self.stack.len();
+                let target = self.expression(&index.target);
+                decl.push_str(&target.decl);
+                global.push_str(&target.global);
+                effect.push_str(&target.effect);
+                let index = self.expression(&index.index);
+                decl.push_str(&index.decl);
+                global.push_str(&index.global);
+                effect.push_str(&index.effect);
+                self.stack.truncate(len);
+                let TypeInstance::Array { element, .. } = target.ty else {
+                    panic!("Could not index into type `{}`.", target.ty);
+                };
+                self.assign_var(
+                    effect,
+                    &element,
+                    &format!("{}[{}]", target.immediate, index.immediate),
+                    &immediate,
+                );
+            }
+        }
+    }
+
+    fn assignee_input(
+        &mut self,
+        decl: &mut String,
+        global: &mut String,
+        effect: &mut String,
+        assignee: &Assignee,
+    ) {
+        let scope = Rc::clone(&self.stack.last().unwrap());
+        match assignee {
+            Assignee::Declaration(declaration) => {
+                let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
+                let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    panic!("Could not deduce type.");
+                };
+                let getter = match ty {
+                    TypeInstance::I32 | TypeInstance::I64 => {
+                        self.feature.insert("reader_def");
+                        self.feature.insert("read_white");
+                        self.feature.insert("read_int");
+                        "read_int()"
+                    }
+                    _ => panic!("Could not find parser for type `{ty}`."),
+                };
+                self.define_var(effect, &ty, &var.mangle, &getter);
+            }
+            Assignee::Path(path) => match path {
+                Path::Simple(simple) => {
+                    let var = scope.borrow().get_var(&simple.content).unwrap();
+                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
+                    };
+                    let getter = match ty {
+                        TypeInstance::I32 | TypeInstance::I64 => {
+                            self.feature.insert("reader_def");
+                            self.feature.insert("read_white");
+                            self.feature.insert("read_int");
+                            "read_int()"
+                        }
+                        _ => panic!("Could not find parser for type `{ty}`."),
+                    };
+                    self.assign_var(effect, &ty, &var.mangle, &getter);
+                }
+            },
+            Assignee::Tuple(args) => {
+                for arg in args.iter() {
+                    self.assignee_input(decl, global, effect, arg);
+                }
+            }
+            Assignee::Index(index) => {
+                let len = self.stack.len();
+                let target = self.expression(&index.target);
+                decl.push_str(&target.decl);
+                global.push_str(&target.global);
+                effect.push_str(&target.effect);
+                let index = self.expression(&index.index);
+                decl.push_str(&index.decl);
+                global.push_str(&index.global);
+                effect.push_str(&index.effect);
+                self.stack.truncate(len);
+                let TypeInstance::Array { element, .. } = target.ty else {
+                    panic!("Could not index into type `{}`.", target.ty);
+                };
+                let getter = match &*element {
+                    TypeInstance::I32 | TypeInstance::I64 => {
+                        self.feature.insert("reader_def");
+                        self.feature.insert("read_white");
+                        self.feature.insert("read_int");
+                        "read_int()"
+                    }
+                    _ => panic!("Could not find parser for type `{element}`."),
+                };
+                self.assign_var(
+                    effect,
+                    &element,
+                    &format!("{}[{}]", target.immediate, index.immediate),
+                    &getter,
+                );
             }
         }
     }
@@ -989,8 +1118,8 @@ impl Codegen {
         let len = self.stack.len();
         let rhs = self.expression(&compound.rhs);
         self.stack.truncate(len);
-        let decl = rhs.decl;
-        let global = rhs.global;
+        let mut decl = rhs.decl;
+        let mut global = rhs.global;
         let mut effect = rhs.effect;
         let scope = Rc::clone(self.stack.last().unwrap());
         match &compound.lhs {
@@ -1020,6 +1149,27 @@ impl Codegen {
                     }
                 }
             },
+            Place::Index(index) => {
+                let len = self.stack.len();
+                let target = self.expression(&index.target);
+                decl.push_str(&target.decl);
+                global.push_str(&target.global);
+                effect.push_str(&target.effect);
+                let index = self.expression(&index.index);
+                decl.push_str(&index.decl);
+                global.push_str(&index.global);
+                effect.push_str(&index.effect);
+                self.stack.truncate(len);
+                let TypeInstance::Array { element, .. } = target.ty else {
+                    panic!("Could not index into type `{}`.", target.ty);
+                };
+                self.assign_var(
+                    &mut effect,
+                    &element,
+                    &format!("{}[{}]", target.immediate, index.immediate),
+                    &rhs.immediate,
+                );
+            }
         }
         Intermediate {
             ty,
@@ -1027,6 +1177,72 @@ impl Codegen {
             global,
             effect,
             immediate: "".into(),
+        }
+    }
+
+    fn assign_var(&mut self, out: &mut String, ty: &TypeInstance, lhs: &str, rhs: &str) {
+        if let TypeInstance::Array { element, len } = ty {
+            self.feature.insert("memcpy");
+            writeln!(
+                out,
+                "memcpy_((char *){}, (char *){}, sizeof({}) * {len});",
+                lhs,
+                rhs,
+                element.mapped(),
+            )
+            .unwrap();
+        } else {
+            writeln!(out, "{} = {};", lhs, rhs).unwrap();
+        }
+    }
+
+    fn define_var(&mut self, out: &mut String, ty: &TypeInstance, lhs: &str, rhs: &str) {
+        if let TypeInstance::Array { element, len } = ty {
+            self.feature.insert("memcpy");
+            writeln!(out, "{};", ty.declare(lhs)).unwrap();
+            writeln!(
+                out,
+                "memcpy_((char *){}, (char *){}, sizeof({}) * {len});",
+                lhs,
+                rhs,
+                element.mapped(),
+            )
+            .unwrap();
+        } else {
+            writeln!(out, "{} = {};", ty.declare(lhs), rhs).unwrap();
+        }
+    }
+
+    fn index(&mut self, index: &Index) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let len = self.stack.len();
+        let mut decl = String::new();
+        let mut global = String::new();
+        let mut effect = String::new();
+        let target = self.expression(&index.target);
+        decl.push_str(&target.decl);
+        global.push_str(&target.global);
+        effect.push_str(&target.effect);
+        let index = self.expression(&index.index);
+        decl.push_str(&index.decl);
+        global.push_str(&index.global);
+        effect.push_str(&index.effect);
+        self.stack.truncate(len);
+        let immediate = if ty != TypeInstance::Never {
+            format!("{}[{}]", target.immediate, index.immediate)
+        } else {
+            "".into()
+        };
+        Intermediate {
+            ty,
+            decl,
+            global,
+            effect,
+            immediate,
         }
     }
 }

@@ -1,5 +1,6 @@
 use statement::{parse_statement, Statement};
 use winnow::{
+    ascii::digit1,
     combinator::{opt, preceded, repeat, terminated},
     Located, PResult, Parser,
 };
@@ -26,4 +27,10 @@ pub fn parse_program(s: &mut Located<&str>) -> PResult<Program> {
     )
     .map(|statement| Program { statement })
     .parse_next(s)
+}
+
+pub fn parse_usize(s: &mut Located<&str>) -> PResult<usize> {
+    digit1
+        .verify_map(|digits: &str| digits.parse().ok())
+        .parse_next(s)
 }

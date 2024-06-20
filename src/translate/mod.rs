@@ -26,10 +26,15 @@ pub enum TypeInstance {
         result: Box<TypeInstance>,
     },
     Never,
+    Array {
+        element: Box<TypeInstance>,
+        len: usize,
+    },
 }
 
 impl TypeInstance {
     fn remove_id(&self, out: &mut String) {
+        use std::fmt::Write;
         use TypeInstance::*;
         match self {
             I32 => out.push('0'),
@@ -54,6 +59,10 @@ impl TypeInstance {
                 out.push(']');
             }
             Never => out.push('6'),
+            Array { element, len } => {
+                element.remove_id(out);
+                writeln!(out, "${len}").unwrap();
+            }
         }
     }
 
@@ -76,23 +85,47 @@ pub enum TypeInference {
         result: Rc<RefCell<TypeInference>>,
     },
     Never,
+    Array {
+        element: Rc<RefCell<TypeInference>>,
+        len: usize,
+    },
 }
 
 impl TypeInference {
-    pub fn unify(&mut self, other: &mut TypeInference) {
+    pub fn unify(a: &Rc<RefCell<Self>>, b: &Rc<RefCell<Self>>) {
+        if Rc::ptr_eq(&a, &b) {
+            return;
+        }
         use TypeInference::*;
-        let unified = match (&*self, &*other) {
+        let unified = match (&*a.borrow(), &*b.borrow()) {
             (Error, _) | (_, Error) => Error,
             (Never, _) | (_, Never) => Never,
             (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
-            (Tuple(a), Tuple(b)) => {
-                if a.len() != b.len() {
+            (Tuple(aargs), Tuple(bargs)) => {
+                if aargs.len() != bargs.len() {
                     Error
                 } else {
-                    for (a, b) in a.iter().zip(b.iter()) {
-                        a.borrow_mut().unify(&mut b.borrow_mut());
+                    for (aarg, barg) in aargs.iter().zip(bargs.iter()) {
+                        Self::unify(aarg, barg);
                     }
-                    self.clone()
+                    a.borrow().clone()
+                }
+            }
+            (
+                Array {
+                    element: aelem,
+                    len: alen,
+                },
+                Array {
+                    element: belem,
+                    len: blen,
+                },
+            ) => {
+                if alen != blen {
+                    Error
+                } else {
+                    Self::unify(aelem, belem);
+                    a.borrow().clone()
                 }
             }
             (Exact(TypeInstance::I32), Integer) | (Integer, Exact(TypeInstance::I32)) => {
@@ -114,16 +147,14 @@ impl TypeInference {
                 if largs.len() != rargs.len() {
                     Error
                 } else {
-                    let mut lresult_ty = lresult.borrow_mut();
-                    lresult_ty.unify(&mut rresult.borrow_mut());
-                    if *lresult_ty == Error {
+                    Self::unify(lresult, rresult);
+                    if *lresult.borrow() == Error {
                         Error
                     } else {
                         let mut is_never = false;
                         for (larg, rarg) in largs.iter().zip(rargs.iter()) {
-                            let mut larg_ty = larg.borrow_mut();
-                            larg_ty.unify(&mut rarg.borrow_mut());
-                            if *larg_ty == Error {
+                            Self::unify(larg, rarg);
+                            if *larg.borrow() == Error {
                                 is_never = true;
                                 break;
                             }
@@ -136,11 +167,11 @@ impl TypeInference {
                     }
                 }
             }
-            _ if self == other => return,
+            _ if a == b => return,
             _ => Error,
         };
-        *self = unified.clone();
-        *other = unified;
+        a.replace(unified.clone());
+        b.replace(unified);
     }
 }
 
@@ -172,6 +203,13 @@ impl Display for TypeInstance {
                 result.fmt(f)
             }
             TypeInstance::Never => f.write_str("!"),
+            TypeInstance::Array { element, len } => {
+                f.write_str("[")?;
+                element.fmt(f)?;
+                f.write_str("; ")?;
+                len.fmt(f)?;
+                f.write_str("]")
+            }
         }
     }
 }
@@ -185,6 +223,19 @@ impl TypeInstance {
             TypeInstance::I64 => "int64_t".into(),
             TypeInstance::Function { .. } => format!("void"),
             TypeInstance::Never => "void".into(),
+            TypeInstance::Array { element, len } => format!("{}[{len}]", element.mapped()),
+        }
+    }
+
+    pub fn declare(&self, name: &str) -> String {
+        match self {
+            TypeInstance::I32 => format!("int32_t {name}"),
+            TypeInstance::Bool => format!("char {name}"),
+            TypeInstance::Tuple { id, .. } => format!("T{id} {name}"),
+            TypeInstance::I64 => format!("int64_t {name}"),
+            TypeInstance::Function { .. } => format!("void {name}"),
+            TypeInstance::Never => format!("void {name}"),
+            TypeInstance::Array { element, len } => element.declare(&format!("{name}[{len}]")),
         }
     }
 }

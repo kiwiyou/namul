@@ -1,7 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression},
+    expression::{Assignee, Block, BlockExpression, Expression, Index, NonblockExpression, Place},
+    path::Path,
     statement::{Pattern, Statement},
     Program,
 };
@@ -42,15 +43,8 @@ impl NameResolver {
             Statement::Input(parser) => {
                 let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
                 self.scopes.push(Rc::clone(&scope));
-                for (_, name) in parser.arg.iter() {
-                    scope.borrow_mut().var.insert(
-                        name.content.clone(),
-                        Variable {
-                            mangle: format!("_{}_{}", name.content, self.var_id),
-                            ty: Rc::new(RefCell::new(TypeInference::Unknown)),
-                        },
-                    );
-                    self.var_id += 1;
+                for arg in parser.arg.iter() {
+                    self.assignee(Rc::clone(&scope), arg);
                 }
                 scope
             }
@@ -174,13 +168,20 @@ impl NameResolver {
                     self.expression(Rc::clone(&parent), &assignment.rhs);
                     let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
                     self.scopes.push(Rc::clone(&scope));
-                    self.assignee(&mut scope.borrow_mut(), &assignment.lhs);
+                    self.assignee(Rc::clone(&scope), &assignment.lhs);
                     scope
                 }
                 NonblockExpression::CompoundAssignment(compound) => {
                     self.expression(Rc::clone(&parent), &compound.rhs);
+                    match &compound.lhs {
+                        Place::Path(_) => {}
+                        Place::Index(index) => {
+                            self.index(Rc::clone(&parent), index);
+                        }
+                    }
                     parent
                 }
+                NonblockExpression::Index(index) => self.index(parent, index),
             },
         }
     }
@@ -219,13 +220,13 @@ impl NameResolver {
         }
     }
 
-    fn assignee(&mut self, scope: &mut Scope, assignee: &Assignee) {
+    fn assignee(&mut self, scope: Rc<RefCell<Scope>>, assignee: &Assignee) {
         match assignee {
             Assignee::Declaration(declaration) => {
                 let id = self.var_id;
                 self.var_id += 1;
                 let name = &declaration.ident.content;
-                scope.var.insert(
+                scope.borrow_mut().var.insert(
                     name.clone(),
                     Variable {
                         mangle: format!("_{name}_{id}"),
@@ -236,9 +237,19 @@ impl NameResolver {
             Assignee::Path(_) => {}
             Assignee::Tuple(args) => {
                 for arg in args.iter() {
-                    self.assignee(scope, arg);
+                    self.assignee(Rc::clone(&scope), arg);
                 }
             }
+            Assignee::Index(index) => {
+                self.index(scope, index);
+            }
         }
+    }
+
+    fn index(&mut self, parent: Rc<RefCell<Scope>>, index: &Index) -> Rc<RefCell<Scope>> {
+        let mut scope = Rc::clone(&parent);
+        scope = self.expression(scope, &index.target);
+        self.expression(scope, &index.index);
+        parent
     }
 }

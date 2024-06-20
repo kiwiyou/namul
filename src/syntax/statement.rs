@@ -7,7 +7,8 @@ use crate::syntax::expression::parse_expression;
 
 use super::{
     expression::{
-        parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression,
+        parse_assignee, parse_block, parse_block_expression, parse_nonblock_expression, Assignee,
+        Block, Expression,
     },
     item::{parse_type, Type},
     Token, TokenKind,
@@ -30,12 +31,15 @@ pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
         parse_input_parser.map(Statement::Input),
         parse_repeat.map(Statement::Repeat),
         parse_while.map(Statement::While),
+        parse_block_expression
+            .map(Expression::Block)
+            .map(Statement::Expression),
         terminated(
             parse_nonblock_expression,
             (opt(TokenKind::White), TokenKind::PunctSemicolon),
         )
-        .map(|nonblock| Statement::Expression(Expression::Nonblock(nonblock))),
-        parse_block_expression.map(|block| Statement::Expression(Expression::Block(block))),
+        .map(Expression::Nonblock)
+        .map(Statement::Expression),
     ))
     .parse_next(s)
 }
@@ -107,7 +111,7 @@ pub fn parse_repeat(s: &mut Located<&str>) -> PResult<Repeat> {
 
 #[derive(Debug, Clone)]
 pub struct InputParser {
-    pub arg: Vec<(Token, Token)>,
+    pub arg: Vec<Assignee>,
 }
 
 pub fn parse_input_parser(s: &mut Located<&str>) -> PResult<InputParser> {
@@ -115,7 +119,7 @@ pub fn parse_input_parser(s: &mut Located<&str>) -> PResult<InputParser> {
         TokenKind::PunctVerticalLine,
         separated(
             1..,
-            preceded(opt(TokenKind::White), parse_input_arg),
+            preceded(opt(TokenKind::White), parse_assignee),
             TokenKind::PunctComma,
         ),
         (
@@ -125,15 +129,6 @@ pub fn parse_input_parser(s: &mut Located<&str>) -> PResult<InputParser> {
         ),
     )
     .map(|arg| InputParser { arg })
-    .parse_next(s)
-}
-
-pub fn parse_input_arg(s: &mut Located<&str>) -> PResult<(Token, Token)> {
-    separated_pair(
-        TokenKind::Identifier,
-        TokenKind::White,
-        TokenKind::Identifier,
-    )
     .parse_next(s)
 }
 

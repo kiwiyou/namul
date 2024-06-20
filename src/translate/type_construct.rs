@@ -1,8 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression},
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place},
     item::Type,
+    path::Path,
     statement::{Pattern, Statement},
     Program,
 };
@@ -39,16 +40,10 @@ impl TypeConstructor {
             Statement::Input(parser) => {
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
-                for (ty, name) in parser.arg.iter() {
-                    let scope = scope.borrow_mut();
-                    let Some(ty) = scope.get_ty(&ty.content) else {
-                        panic!("Could not find type `{}` in scope.", ty.content);
-                    };
-                    let var = scope.get_var(&name.content).unwrap();
-                    let mut var_ty = var.ty.borrow_mut();
-                    var_ty.unify(&mut ty.borrow_mut());
-                }
                 self.stack.push(scope);
+                for arg in parser.arg.iter() {
+                    self.assignee(arg);
+                }
             }
             Statement::Expression(expr) => {
                 self.expression(expr);
@@ -75,7 +70,7 @@ impl TypeConstructor {
                 self.last += 1;
                 self.stack.push(Rc::clone(&scope));
                 let scope = scope.borrow();
-                TypeInference::Function {
+                let actual = Rc::new(RefCell::new(TypeInference::Function {
                     args: self.construct_arg(&scope, &function.args),
                     result: function
                         .result
@@ -83,8 +78,8 @@ impl TypeConstructor {
                         .map_or(Rc::new(RefCell::new(TypeInference::Never)), |result| {
                             self.construct_type(&scope, result)
                         }),
-                }
-                .unify(&mut var.ty.borrow_mut());
+                }));
+                TypeInference::unify(&actual, &var.ty);
                 for arg in function.args.iter() {
                     self.pattern(arg);
                 }
@@ -115,7 +110,14 @@ impl TypeConstructor {
                     self.expression(&expr);
                 }
                 NonblockExpression::Literal(_) => {}
-                NonblockExpression::Path(_) => {}
+                NonblockExpression::Path(path) => match path {
+                    Path::Simple(simple) => {
+                        let scope = Rc::clone(self.stack.last().unwrap());
+                        if scope.borrow().get_var(&simple.content).is_none() {
+                            panic!("Could not find {} in scope.", simple.content);
+                        }
+                    }
+                },
                 NonblockExpression::Binary(binary) => {
                     self.expression(&binary.lhs);
                     self.expression(&binary.rhs);
@@ -162,8 +164,7 @@ impl TypeConstructor {
                     let scope = scope.borrow();
                     let ty = self.construct_type(&scope, &declaration.ty);
                     let var = scope.get_var(&declaration.ident.content).unwrap();
-                    let mut var_ty = var.ty.borrow_mut();
-                    var_ty.unify(&mut ty.borrow_mut());
+                    TypeInference::unify(&var.ty, &ty);
                 }
                 NonblockExpression::Assignment(assignment) => {
                     self.expression(&assignment.rhs);
@@ -175,6 +176,28 @@ impl TypeConstructor {
                 NonblockExpression::CompoundAssignment(compound) => {
                     let len = self.stack.len();
                     self.expression(&compound.rhs);
+                    self.stack.truncate(len);
+                    match &compound.lhs {
+                        Place::Path(path) => match path {
+                            Path::Simple(simple) => {
+                                let scope = Rc::clone(self.stack.last().unwrap());
+                                if scope.borrow().get_var(&simple.content).is_none() {
+                                    panic!("Could not find {} in scope.", simple.content);
+                                }
+                            }
+                        },
+                        Place::Index(index) => {
+                            let len = self.stack.len();
+                            self.expression(&index.target);
+                            self.expression(&index.index);
+                            self.stack.truncate(len);
+                        }
+                    }
+                }
+                NonblockExpression::Index(index) => {
+                    let len = self.stack.len();
+                    self.expression(&index.target);
+                    self.expression(&index.index);
                     self.stack.truncate(len);
                 }
             },
@@ -228,6 +251,10 @@ impl TypeConstructor {
                     .map(|ty| self.construct_type(scope, ty))
                     .collect(),
             ))),
+            Type::Array(array) => Rc::new(RefCell::new(TypeInference::Array {
+                element: self.construct_type(scope, &array.element),
+                len: array.len,
+            })),
         }
     }
 
@@ -239,8 +266,7 @@ impl TypeConstructor {
                 let scope = scope.borrow();
                 let decl_ty = self.construct_type(&scope, &decl.ty);
                 let var = scope.get_var(&decl.ident.content).unwrap();
-                let mut var_ty = var.ty.borrow_mut();
-                var_ty.unify(&mut decl_ty.borrow_mut());
+                TypeInference::unify(&var.ty, &decl_ty);
             }
             Pattern::Tuple(args) => {
                 for arg in args {
@@ -254,16 +280,29 @@ impl TypeConstructor {
         let scope = Rc::clone(&self.stack.last().unwrap());
         match assignee {
             Assignee::Declaration(declaration) => {
-                let scope = scope.borrow();
-                let var = scope.get_var(&declaration.ident.content).unwrap();
-                let mut var_ty = var.ty.borrow_mut();
-                var_ty.unify(&mut self.construct_type(&scope, &declaration.ty).borrow_mut());
+                let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
+                TypeInference::unify(
+                    &var.ty,
+                    &self.construct_type(&scope.borrow(), &declaration.ty),
+                );
             }
-            Assignee::Path(_) => {}
+            Assignee::Path(path) => match path {
+                Path::Simple(simple) => {
+                    if scope.borrow().get_var(&simple.content).is_none() {
+                        panic!("Could not find {} in scope.", simple.content);
+                    }
+                }
+            },
             Assignee::Tuple(args) => {
                 for arg in args.iter() {
                     self.assignee(arg);
                 }
+            }
+            Assignee::Index(index) => {
+                let len = self.stack.len();
+                self.expression(&index.target);
+                self.expression(&index.index);
+                self.stack.truncate(len);
             }
         }
     }

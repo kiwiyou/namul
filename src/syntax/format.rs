@@ -1,5 +1,5 @@
 use winnow::{
-    ascii::{digit1, multispace1},
+    ascii::multispace1,
     combinator::{alt, delimited, opt, preceded, repeat},
     token::take_till,
     Located, PResult, Parser,
@@ -7,7 +7,7 @@ use winnow::{
 
 use crate::syntax::TokenKind;
 
-use super::Token;
+use super::{parse_usize, Token};
 
 #[derive(Debug, Clone)]
 pub struct FormatString {
@@ -92,11 +92,5 @@ fn parse_escaped_whitespace<'a>(input: &mut Located<&'a str>) -> PResult<&'a str
 }
 
 fn parse_format_placeholder(s: &mut Located<&str>) -> PResult<Option<usize>> {
-    preceded('$', opt(parse_format_index)).parse_next(s)
-}
-
-fn parse_format_index(s: &mut Located<&str>) -> PResult<usize> {
-    digit1
-        .verify_map(|digits: &str| digits.parse().ok())
-        .parse_next(s)
+    preceded('$', opt(parse_usize)).parse_next(s)
 }
