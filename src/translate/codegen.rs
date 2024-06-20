@@ -17,7 +17,10 @@ use crate::syntax::{
     Program, TokenKind,
 };
 
-use super::{resolver::NameResolver, typeck::TypeChecker, Scope, TypeInference, TypeInstance};
+use super::{
+    name_resolve::NameResolver, type_check::TypeChecker, type_construct::TypeConstructor, Scope,
+    TypeInference, TypeInstance,
+};
 
 pub struct Codegen {
     feature: HashSet<&'static str>,
@@ -46,7 +49,7 @@ impl Codegen {
             TypeInference::Exact(exact) => Some(exact.clone()),
             TypeInference::Integer => Some(TypeInstance::I32),
             TypeInference::Unknown => None,
-            TypeInference::Never => None,
+            TypeInference::Error => None,
             TypeInference::Tuple(tuple) => {
                 let mut args = vec![];
                 for arg in tuple.iter() {
@@ -468,6 +471,7 @@ impl Codegen {
                     let Some(ty) = scope.get_ty(&ty.content) else {
                         panic!("Could not find type `{}` in scope.", ty.content);
                     };
+                    let ty = self.synthesize(&ty.borrow()).unwrap();
                     let getter = match ty {
                         TypeInstance::I32 | TypeInstance::I64 => {
                             self.feature.insert("reader_def");
@@ -683,7 +687,9 @@ impl Codegen {
 
     pub fn translate(program: &Program) -> String {
         let name_resolver = NameResolver::new(program);
-        let mut type_checker = TypeChecker::from_name_resolver(name_resolver);
+        let mut type_constructor = TypeConstructor::from_name_resolver(name_resolver);
+        type_constructor.run(program);
+        let mut type_checker = TypeChecker::from_type_constructor(type_constructor);
         type_checker.run(program);
 
         let mut translator = Codegen {
@@ -795,7 +801,11 @@ impl Codegen {
         let mut call = String::new();
         let id = self.counter;
         self.counter += 1;
-        write!(call, "{} inv{id} = {}(", ty.mapped(), callee.immediate).unwrap();
+        if ty == TypeInstance::Unit {
+            write!(call, "{}(", callee.immediate).unwrap();
+        } else {
+            write!(call, "{} inv{id} = {}(", ty.mapped(), callee.immediate).unwrap();
+        }
         for (i, arg) in invocation.args.iter().enumerate() {
             if i > 0 {
                 call.push_str(", ");

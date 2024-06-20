@@ -2,14 +2,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
     expr::{Block, BlockExpression, Expression, NonblockExpression},
-    item::Type,
     literal::Literal,
     path::Path,
     stmt::{Pattern, Statement},
     Program,
 };
 
-use super::{resolver::NameResolver, Scope, TypeInference, TypeInstance};
+use super::{type_construct::TypeConstructor, Scope, TypeInference, TypeInstance};
 
 pub struct TypeChecker {
     pub scopes: Vec<Rc<RefCell<Scope>>>,
@@ -17,18 +16,16 @@ pub struct TypeChecker {
     stack: Vec<Rc<RefCell<Scope>>>,
     block_stack: Vec<Rc<RefCell<Scope>>>,
     last: usize,
-    tuple_id: usize,
 }
 
 impl TypeChecker {
-    pub fn from_name_resolver(resolver: NameResolver) -> Self {
+    pub fn from_type_constructor(constructor: TypeConstructor) -> Self {
         Self {
-            scopes: resolver.scopes,
+            scopes: constructor.scopes,
             inference: vec![],
             stack: vec![],
             block_stack: vec![],
             last: 1usize,
-            tuple_id: 0,
         }
     }
 
@@ -42,19 +39,9 @@ impl TypeChecker {
     fn statement(&mut self, stmt: &Statement) {
         match stmt {
             Statement::Nop => {}
-            Statement::Input(parser) => {
+            Statement::Input(_) => {
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
-                for (ty, name) in parser.arg.iter() {
-                    let scope = scope.borrow_mut();
-                    let Some(ty) = scope.get_ty(&ty.content) else {
-                        panic!("Could not find type `{}` in scope.", ty.content);
-                    };
-                    let mut constraint = TypeInference::Exact(ty.clone());
-                    let var = scope.get_var(&name.content).unwrap();
-                    let mut var_ty = var.ty.borrow_mut();
-                    var_ty.unify(&mut constraint);
-                }
                 self.stack.push(scope);
             }
             Statement::Expression(expr) => {
@@ -63,9 +50,9 @@ impl TypeChecker {
             Statement::Assignment(assignment) => {
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
+                self.stack.push(scope);
                 let rhs = self.expression(&assignment.rhs);
                 let mut rhs_ty = rhs.borrow_mut();
-                self.stack.push(scope);
                 let pattern = self.pattern(&assignment.lhs);
                 rhs_ty.unify(&mut pattern.borrow_mut());
             }
@@ -78,32 +65,16 @@ impl TypeChecker {
                 self.block(&while_.block);
             }
             Statement::Function(function) => {
-                let block = Rc::clone(self.block_stack.last().unwrap());
-                let var = {
-                    let block = block.borrow_mut();
-                    block.get_var(&function.ident.content).unwrap()
-                };
+                let block = Rc::clone(&self.block_stack.last().unwrap());
+                let var = block.borrow().get_var(&function.ident.content).unwrap();
+                let mut args = vec![];
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
-                self.stack.push(Rc::clone(&scope));
-                let mut args = vec![];
+                self.stack.push(scope);
                 for arg in function.args.iter() {
                     args.push(self.pattern(arg));
                 }
                 let result = self.block(&function.block);
-                {
-                    let mut result_ty = result.borrow_mut();
-                    let scope = scope.borrow();
-                    TypeInference::Exact(
-                        function
-                            .result
-                            .as_ref()
-                            .map_or(TypeInstance::Unit, |result| {
-                                self.construct_type(&scope, result)
-                            }),
-                    )
-                    .unify(&mut result_ty);
-                }
                 TypeInference::Function { args, result }.unify(&mut var.ty.borrow_mut());
                 self.stack.pop();
             }
@@ -209,11 +180,11 @@ impl TypeChecker {
                     for arg in invocation.args.iter() {
                         args.push(Rc::clone(&self.expression(arg)));
                     }
-                    TypeInference::Function {
+                    let mut func_ty = TypeInference::Function {
                         args,
                         result: Rc::clone(&ty),
-                    }
-                    .unify(&mut func.borrow_mut());
+                    };
+                    func_ty.unify(&mut func.borrow_mut());
                 }
             },
         };
@@ -243,28 +214,6 @@ impl TypeChecker {
         ty
     }
 
-    fn construct_type(&mut self, scope: &Scope, ty: &Type) -> TypeInstance {
-        match ty {
-            Type::Path(path) => {
-                let Some(ty) = scope.get_ty(&path.ident.content) else {
-                    panic!("Could not find type `{}` in scope.", path.ident.content);
-                };
-                ty
-            }
-            Type::Tuple(args) => {
-                let id = self.tuple_id;
-                self.tuple_id += 1;
-                TypeInstance::Tuple {
-                    id,
-                    args: args
-                        .iter()
-                        .map(|ty| self.construct_type(scope, ty))
-                        .collect(),
-                }
-            }
-        }
-    }
-
     fn pattern(&mut self, pattern: &Pattern) -> Rc<RefCell<TypeInference>> {
         let scope = Rc::clone(self.stack.last().unwrap());
         match pattern {
@@ -275,10 +224,7 @@ impl TypeChecker {
             }
             Pattern::Declaration(decl) => {
                 let scope = scope.borrow();
-                let mut decl_ty = TypeInference::Exact(self.construct_type(&scope, &decl.ty));
                 let var = scope.get_var(&decl.ident.content).unwrap();
-                let mut var_ty = var.ty.borrow_mut();
-                var_ty.unify(&mut decl_ty);
                 Rc::clone(&var.ty)
             }
             Pattern::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(

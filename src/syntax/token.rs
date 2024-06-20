@@ -27,6 +27,7 @@ pub enum TokenKind {
     KeywordFalse,
     KeywordWhile,
     KeywordFn,
+    KeywordReturn,
     PunctComma,
     PunctSemicolon,
     PunctVerticalLine,
@@ -197,6 +198,9 @@ pub fn parse_keyword(s: &mut Located<&str>) -> PResult<Token> {
             .map(token(TokenKind::KeywordWhile)),
         literal("rep").with_span().map(token(TokenKind::KeywordRep)),
         literal("fn").with_span().map(token(TokenKind::KeywordFn)),
+        literal("return")
+            .with_span()
+            .map(token(TokenKind::KeywordFn)),
         literal("true")
             .with_span()
             .map(token(TokenKind::KeywordTrue)),

@@ -1,14 +1,15 @@
 use std::{cell::RefCell, collections::HashMap, fmt::Display, rc::Rc};
 
 pub mod codegen;
-pub mod resolver;
-pub mod typeck;
+pub mod name_resolve;
+pub mod type_check;
+pub mod type_construct;
 
 #[derive(Debug, Clone)]
 pub struct Scope {
     parent: Option<Rc<RefCell<Scope>>>,
     var: HashMap<String, Variable>,
-    ty: HashMap<String, TypeInstance>,
+    ty: HashMap<String, Rc<RefCell<TypeInference>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -67,38 +68,27 @@ impl TypeInstance {
 pub enum TypeInference {
     Exact(TypeInstance),
     Tuple(Vec<Rc<RefCell<TypeInference>>>),
+    Integer,
+    Unknown,
+    Error,
     Function {
         args: Vec<Rc<RefCell<TypeInference>>>,
         result: Rc<RefCell<TypeInference>>,
     },
-    Integer,
-    Unknown,
-    Never,
 }
 
 impl TypeInference {
     pub fn unify(&mut self, other: &mut TypeInference) {
         use TypeInference::*;
         let unified = match (&*self, &*other) {
-            (Never, _) | (_, Never) => Never,
+            (Error, _) | (_, Error) => Error,
             (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
             (Tuple(a), Tuple(b)) => {
                 if a.len() != b.len() {
-                    Never
+                    Error
                 } else {
                     for (a, b) in a.iter().zip(b.iter()) {
                         a.borrow_mut().unify(&mut b.borrow_mut());
-                    }
-                    self.clone()
-                }
-            }
-            (Tuple(friend), Exact(TypeInstance::Tuple { args: model, .. }))
-            | (Exact(TypeInstance::Tuple { args: model, .. }), Tuple(friend)) => {
-                if model.len() != friend.len() {
-                    Never
-                } else {
-                    for (model, friend) in model.iter().zip(friend.iter()) {
-                        TypeInference::Exact(model.clone()).unify(&mut friend.borrow_mut());
                     }
                     self.clone()
                 }
@@ -120,24 +110,24 @@ impl TypeInference {
                 },
             ) => {
                 if largs.len() != rargs.len() {
-                    Never
+                    Error
                 } else {
                     let mut lresult_ty = lresult.borrow_mut();
                     lresult_ty.unify(&mut rresult.borrow_mut());
-                    if *lresult_ty == Never {
-                        Never
+                    if *lresult_ty == Error {
+                        Error
                     } else {
                         let mut is_never = false;
                         for (larg, rarg) in largs.iter().zip(rargs.iter()) {
                             let mut larg_ty = larg.borrow_mut();
                             larg_ty.unify(&mut rarg.borrow_mut());
-                            if *larg_ty == Never {
+                            if *larg_ty == Error {
                                 is_never = true;
                                 break;
                             }
                         }
                         if is_never {
-                            Never
+                            Error
                         } else {
                             return;
                         }
@@ -145,7 +135,7 @@ impl TypeInference {
                 }
             }
             _ if self == other => return,
-            _ => Never,
+            _ => Error,
         };
         *self = unified.clone();
         *other = unified;
@@ -206,9 +196,18 @@ pub struct Variable {
 impl Scope {
     pub fn root() -> Self {
         let mut ty = HashMap::new();
-        ty.insert("i32".into(), TypeInstance::I32);
-        ty.insert("i64".into(), TypeInstance::I64);
-        ty.insert("bool".into(), TypeInstance::Bool);
+        ty.insert(
+            "i32".into(),
+            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::I32))),
+        );
+        ty.insert(
+            "i64".into(),
+            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::I64))),
+        );
+        ty.insert(
+            "bool".into(),
+            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+        );
         Self {
             parent: None,
             var: Default::default(),
@@ -231,9 +230,9 @@ impl Scope {
         self.parent.as_ref()?.borrow().get_var(name)
     }
 
-    pub fn get_ty(&self, name: &str) -> Option<TypeInstance> {
+    pub fn get_ty(&self, name: &str) -> Option<Rc<RefCell<TypeInference>>> {
         if let Some(ty) = self.ty.get(name) {
-            return Some(ty.clone());
+            return Some(Rc::clone(ty));
         }
         self.parent.as_ref()?.borrow().get_ty(name)
     }

@@ -1,6 +1,5 @@
 use winnow::{
-    combinator::{alt, cut_err, delimited, opt, preceded, repeat, separated},
-    error::{StrContext, StrContextValue},
+    combinator::{alt, delimited, opt, preceded, repeat, separated},
     seq, Located, PResult, Parser,
 };
 
@@ -435,4 +434,20 @@ pub fn parse_invocation(s: &mut Located<&str>) -> PResult<Invocation> {
         _: opt(TokenKind::White),
         _: TokenKind::PunctRightParenthesis,
     ).map(|(callee, args)|Invocation { callee: Box::new(callee), args }).parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Return {
+    pub value: Box<Expression>,
+}
+
+pub fn parse_return(s: &mut Located<&str>) -> PResult<Return> {
+    preceded(
+        (TokenKind::KeywordReturn, opt(TokenKind::White)),
+        parse_expression,
+    )
+    .map(|value| Return {
+        value: Box::new(value),
+    })
+    .parse_next(s)
 }
