@@ -9,7 +9,7 @@ use crate::syntax::{
     expression::{
         Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
         CompoundAssignment, Declaration, Expression, If, Invocation, MakeTuple, NonblockExpression,
-        Place, Select,
+        Place, Print, Select,
     },
     format::{FormatFragment, FormatString},
     literal::Literal,
@@ -147,7 +147,7 @@ impl Codegen {
                     self.var_id += 1;
                     writeln!(
                         effect,
-                        "{} b{id} = {} {} {}",
+                        "{} b{id} = {} {} {};",
                         ty.mapped(),
                         lhs.immediate,
                         binary.operator.content,
@@ -284,15 +284,28 @@ impl Codegen {
         }
     }
 
-    pub fn print(&mut self, format: &FormatString) -> Intermediate {
+    pub fn print(&mut self, print: &Print) -> Intermediate {
         let current_infer = Rc::clone(&self.inference[self.last_infer]);
         let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
         self.last_infer += 1;
+        let len = self.stack.len();
+        let mut decl = String::new();
+        let mut global = String::new();
         let mut effect = String::new();
+        let mut immediates = vec![];
+        for arg in print.args.iter() {
+            let expr = self.expression(arg);
+            decl.push_str(&expr.decl);
+            global.push_str(&expr.global);
+            effect.push_str(&expr.effect);
+            immediates.push((false, expr.immediate, expr.ty));
+        }
+        let scope = Rc::clone(&self.stack.last().unwrap());
         self.feature.insert("writer_def");
-        for fragment in format.fragment.iter() {
+        let mut last_auto = 0;
+        for fragment in print.format.fragment.iter() {
             match fragment {
                 FormatFragment::Literal(literal) => {
                     self.feature.insert("write_literal");
@@ -304,10 +317,8 @@ impl Codegen {
                     )
                     .unwrap();
                 }
-                FormatFragment::Ident { ident, .. } => {
-                    let scope = Rc::clone(&self.stack.last().unwrap());
-                    let scope = scope.borrow();
-                    let Some(var) = scope.get_var(&ident.content) else {
+                FormatFragment::Ident(ident) => {
+                    let Some(var) = scope.borrow().get_var(&ident.content) else {
                         panic!("Could not print undefined variable {}.", ident.content);
                     };
                     let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
@@ -321,8 +332,39 @@ impl Codegen {
                         _ => panic!("Could not print value of type `{}`.", ty),
                     }
                 }
+                FormatFragment::Placeholder(index) => {
+                    let index = if let &Some(index) = index {
+                        index
+                    } else {
+                        let index = last_auto;
+                        last_auto += 1;
+                        if index > immediates.len() {
+                            panic!("Too many auto format arguments.");
+                        }
+                        index
+                    };
+                    let Some((used, arg, ty)) = immediates.get_mut(index) else {
+                        panic!(
+                            "Format argument index was {} but length was {}.",
+                            index,
+                            immediates.len()
+                        );
+                    };
+                    *used = true;
+                    match &*ty {
+                        TypeInstance::I32 | TypeInstance::I64 => {
+                            self.feature.insert("write_int");
+                            writeln!(effect, "write_int({});", arg).unwrap();
+                        }
+                        _ => panic!("Could not print value of type `{}`.", ty),
+                    }
+                }
             }
         }
+        if let Some(position) = immediates.iter().position(|(used, _, _)| !used) {
+            panic!("Unused format argument {}.", position);
+        }
+        self.stack.truncate(len);
         Intermediate {
             ty,
             decl: "".into(),

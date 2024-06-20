@@ -1,9 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place::Path},
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression},
     item::Type,
-    path::Path::Simple,
     statement::{Pattern, Statement},
     Program,
 };
@@ -127,7 +126,13 @@ impl TypeConstructor {
                         self.expression(expr);
                     }
                 }
-                NonblockExpression::Print(_) => {}
+                NonblockExpression::Print(print) => {
+                    let len = self.stack.len();
+                    for arg in print.args.iter() {
+                        self.expression(arg);
+                    }
+                    self.stack.truncate(len);
+                }
                 NonblockExpression::Select(select) => {
                     let len = self.stack.len();
                     self.expression(&select.condition);

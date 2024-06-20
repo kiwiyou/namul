@@ -1,8 +1,6 @@
-use std::ops::Range;
-
 use winnow::{
-    ascii::multispace1,
-    combinator::{alt, delimited, preceded, repeat},
+    ascii::{digit1, multispace1},
+    combinator::{alt, delimited, opt, preceded, repeat},
     token::take_till,
     Located, PResult, Parser,
 };
@@ -14,13 +12,13 @@ use super::Token;
 #[derive(Debug, Clone)]
 pub struct FormatString {
     pub fragment: Vec<FormatFragment>,
-    pub span: Range<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum FormatFragment {
     Literal(String),
-    Ident { ident: Token, span: Range<usize> },
+    Ident(Token),
+    Placeholder(Option<usize>),
 }
 
 pub fn parse_format_string(s: &mut Located<&str>) -> PResult<FormatString> {
@@ -52,23 +50,21 @@ pub fn parse_format_string(s: &mut Located<&str>) -> PResult<FormatString> {
                     string
                 })
                 .map(FormatFragment::Literal),
-                parse_format_ident
-                    .with_span()
-                    .map(|(ident, span)| FormatFragment::Ident { ident, span }),
+                parse_format_ident.map(FormatFragment::Ident),
+                parse_format_placeholder.map(FormatFragment::Placeholder),
             )),
         ),
         '`',
     )
-    .with_span()
-    .map(|(fragment, span)| FormatString { fragment, span })
+    .map(|fragment| FormatString { fragment })
     .parse_next(s)
 }
 
-pub fn parse_format_literal<'a>(s: &mut Located<&'a str>) -> PResult<&'a str> {
+fn parse_format_literal<'a>(s: &mut Located<&'a str>) -> PResult<&'a str> {
     take_till(1.., ['`', '\\', '$']).parse_next(s)
 }
 
-pub fn parse_format_escape(s: &mut Located<&str>) -> PResult<char> {
+fn parse_format_escape(s: &mut Located<&str>) -> PResult<char> {
     preceded(
         '\\',
         alt((
@@ -87,10 +83,20 @@ pub fn parse_format_escape(s: &mut Located<&str>) -> PResult<char> {
     .parse_next(s)
 }
 
-pub fn parse_format_ident(s: &mut Located<&str>) -> PResult<Token> {
+fn parse_format_ident(s: &mut Located<&str>) -> PResult<Token> {
     preceded('$', TokenKind::Identifier).parse_next(s)
 }
 
-pub fn parse_escaped_whitespace<'a>(input: &mut Located<&'a str>) -> PResult<&'a str> {
+fn parse_escaped_whitespace<'a>(input: &mut Located<&'a str>) -> PResult<&'a str> {
     preceded('\\', multispace1).parse_next(input)
+}
+
+fn parse_format_placeholder(s: &mut Located<&str>) -> PResult<Option<usize>> {
+    preceded('$', opt(parse_format_index)).parse_next(s)
+}
+
+fn parse_format_index(s: &mut Located<&str>) -> PResult<usize> {
+    digit1
+        .verify_map(|digits: &str| digits.parse().ok())
+        .parse_next(s)
 }

@@ -1,8 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place},
-    path::Path,
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression},
     statement::{Pattern, Statement},
     Program,
 };
@@ -127,7 +126,13 @@ impl NameResolver {
                     }
                     scope
                 }
-                NonblockExpression::Print(_) => parent,
+                NonblockExpression::Print(print) => {
+                    let mut scope = Rc::clone(&parent);
+                    for arg in print.args.iter() {
+                        scope = self.expression(scope, arg);
+                    }
+                    parent
+                }
                 NonblockExpression::Select(select) => {
                     let scope = self.expression(Rc::clone(&parent), &select.condition);
                     self.expression(Rc::clone(&scope), &select.truthy);
@@ -228,13 +233,7 @@ impl NameResolver {
                     },
                 );
             }
-            Assignee::Path(path) => match path {
-                Path::Simple(simple) => {
-                    let Some(_) = scope.get_var(&simple.content) else {
-                        panic!("Could not find {} in scope.", simple.content);
-                    };
-                }
-            },
+            Assignee::Path(_) => {}
             Assignee::Tuple(args) => {
                 for arg in args.iter() {
                     self.assignee(scope, arg);

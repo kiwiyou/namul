@@ -25,7 +25,7 @@ pub enum NonblockExpression {
     Path(Path),
     Binary(BinaryOperation),
     Comparison(Comparison),
-    Print(FormatString),
+    Print(Print),
     Select(Select),
     MakeTuple(MakeTuple),
     Invocation(Invocation),
@@ -45,7 +45,7 @@ pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpre
         parse_comparison.map(NonblockExpression::Comparison),
         parse_add_sub.map(NonblockExpression::Binary),
         parse_mul_div_mod.map(NonblockExpression::Binary),
-        parse_format_string.map(NonblockExpression::Print),
+        parse_print.map(NonblockExpression::Print),
         parse_literal.map(NonblockExpression::Literal),
         parse_path.map(NonblockExpression::Path),
         parse_parentheses,
@@ -237,7 +237,7 @@ pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
         parse_make_tuple
             .map(NonblockExpression::MakeTuple)
             .map(Expression::Nonblock),
-        parse_format_string
+        parse_print
             .map(NonblockExpression::Print)
             .map(Expression::Nonblock),
         parse_literal
@@ -568,5 +568,21 @@ pub fn parse_compound_assignment(s: &mut Located<&str>) -> PResult<CompoundAssig
         op,
         rhs: Box::new(rhs),
     })
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Print {
+    pub format: FormatString,
+    pub args: Vec<Expression>,
+}
+
+pub fn parse_print(s: &mut Located<&str>) -> PResult<Print> {
+    seq!(
+        parse_format_string,
+        repeat(0.., preceded((opt(TokenKind::White), TokenKind::PunctComma, opt(TokenKind::White)), parse_expression)),
+        _: opt(TokenKind::White),
+        _: opt(TokenKind::PunctComma),
+    ).map(|(format, args)| Print { format, args })
     .parse_next(s)
 }

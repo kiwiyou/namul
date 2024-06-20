@@ -6,7 +6,9 @@ use winnow::{
 use crate::syntax::expression::parse_expression;
 
 use super::{
-    expression::{parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression},
+    expression::{
+        parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression,
+    },
     item::{parse_type, Type},
     Token, TokenKind,
 };

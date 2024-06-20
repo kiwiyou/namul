@@ -56,6 +56,7 @@ pub enum TokenKind {
     PunctAsteriskEqualsSign,
     PunctSolidusEqualsSign,
     PunctPercentSignEqualsSign,
+    PunctLowLine,
 }
 
 fn token<T: Into<String>>(kind: TokenKind) -> impl Fn((T, Range<usize>)) -> Token {
@@ -76,11 +77,11 @@ impl Parser<Located<&str>, Token, ContextError> for TokenKind {
 
 pub fn parse_token(s: &mut Located<&str>) -> PResult<Token> {
     alt((
-        parse_literal_decimal,
-        parse_punct,
-        parse_keyword,
         parse_white,
+        parse_literal_decimal,
+        parse_keyword,
         parse_identifier,
+        parse_punct,
     ))
     .parse_next(s)
 }
@@ -120,6 +121,7 @@ pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
         literal(">=")
             .with_span()
             .map(token(TokenKind::PunctGreaterThanSignEqualsSign)),
+        literal("_").with_span().map(token(TokenKind::PunctLowLine)),
         literal(":").with_span().map(token(TokenKind::PunctColon)),
         literal("?")
             .with_span()

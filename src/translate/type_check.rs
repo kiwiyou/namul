@@ -145,7 +145,12 @@ impl TypeChecker {
                     }
                     TypeInference::Exact(TypeInstance::Bool).unify(&mut ty.borrow_mut());
                 }
-                NonblockExpression::Print(_) => {
+                NonblockExpression::Print(print) => {
+                    let len = self.stack.len();
+                    for arg in print.args.iter() {
+                        self.expression(arg);
+                    }
+                    self.stack.truncate(len);
                     TypeInference::Never.unify(&mut ty.borrow_mut());
                 }
                 NonblockExpression::Select(select) => {

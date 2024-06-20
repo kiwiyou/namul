@@ -21,6 +21,12 @@ i32 answer = A + B;
 `$answer`;
 ```
 
+You don't need variables to store temporary result.
+```namul
+|i32 A, i32 B|
+`$`, A + B;
+```
+
 ## A + B with multiple tests
 
 Repeat blocks `T` times.
@@ -28,12 +34,11 @@ Repeat blocks `T` times.
 |i32 T|
 rep T {
     |i32 A, i32 B|;
-    i32 C = A + B;
-    `$C\n`;
+    `$\n`, A + B;
 }
 ```
 
-## Lunar year calculation
+## Leap year calculation
 
 Comparisons can be chained. Format strings are expressions to allow use in conditional operations.
 ```namul
