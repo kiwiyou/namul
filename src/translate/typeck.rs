@@ -9,330 +9,14 @@ use crate::syntax::{
     Program,
 };
 
-#[derive(Debug, Clone)]
-pub struct Scope {
-    parent: Option<Rc<RefCell<Scope>>>,
-    var: HashMap<String, Variable>,
-    ty: HashMap<String, TypeInstance>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TypeInstance {
-    I32,
-    I64,
-    Unit,
-    Bool,
-    Tuple { id: usize, args: Vec<TypeInstance> },
-}
-
-impl TypeInstance {
-    fn remove_id(&self, out: &mut String) {
-        use TypeInstance::*;
-        match self {
-            I32 => out.push('0'),
-            Unit => out.push('1'),
-            Bool => out.push('2'),
-            Tuple { args, .. } => {
-                out.push_str("3[");
-                for arg in args.iter() {
-                    arg.remove_id(out);
-                    out.push(',');
-                }
-                out.push(']');
-            }
-            I64 => out.push('4'),
-        }
-    }
-
-    pub fn id_removed(&self) -> String {
-        let mut ret = String::new();
-        self.remove_id(&mut ret);
-        ret
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeInference {
-    Exact(TypeInstance),
-    Tuple(Vec<Rc<RefCell<TypeInference>>>),
-    Integer,
-    Unknown,
-    Never,
-}
-
-impl TypeInference {
-    pub fn unify(&mut self, other: &mut TypeInference) {
-        use TypeInference::*;
-        let unified = match (&*self, &*other) {
-            (Never, _) | (_, Never) => Never,
-            (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
-            (Tuple(a), Tuple(b)) => {
-                if a.len() != b.len() {
-                    Never
-                } else {
-                    for (a, b) in a.iter().zip(b.iter()) {
-                        a.borrow_mut().unify(&mut b.borrow_mut());
-                    }
-                    self.clone()
-                }
-            }
-            (Tuple(friend), Exact(TypeInstance::Tuple { args: model, .. }))
-            | (Exact(TypeInstance::Tuple { args: model, .. }), Tuple(friend)) => {
-                if model.len() != friend.len() {
-                    Never
-                } else {
-                    for (model, friend) in model.iter().zip(friend.iter()) {
-                        TypeInference::Exact(model.clone()).unify(&mut friend.borrow_mut());
-                    }
-                    self.clone()
-                }
-            }
-            (Exact(TypeInstance::I32), Integer) | (Integer, Exact(TypeInstance::I32)) => {
-                Exact(TypeInstance::I32)
-            }
-            (Exact(TypeInstance::I64), Integer) | (Integer, Exact(TypeInstance::I64)) => {
-                Exact(TypeInstance::I64)
-            }
-            _ if self == other => return,
-            _ => Never,
-        };
-        *self = unified.clone();
-        *other = unified;
-    }
-}
-
-impl Display for TypeInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypeInstance::I32 => f.write_str("i32"),
-            TypeInstance::Unit => f.write_str("()"),
-            TypeInstance::Bool => f.write_str("bool"),
-            TypeInstance::Tuple { args, .. } => {
-                f.write_str("(")?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ").unwrap();
-                    }
-                    arg.fmt(f)?;
-                }
-                f.write_str(")")
-            }
-            TypeInstance::I64 => f.write_str("i64"),
-        }
-    }
-}
-
-impl TypeInstance {
-    pub fn mapped(&self) -> String {
-        match self {
-            TypeInstance::I32 => "int32_t".into(),
-            TypeInstance::Unit => "void".into(),
-            TypeInstance::Bool => "char".into(),
-            TypeInstance::Tuple { id, .. } => format!("T_{id}"),
-            TypeInstance::I64 => "int64_t".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Variable {
-    pub name: String,
-    pub mangle: String,
-    pub ty: Rc<RefCell<TypeInference>>,
-}
-
-impl Scope {
-    pub fn root() -> Self {
-        let mut ty = HashMap::new();
-        ty.insert("i32".into(), TypeInstance::I32);
-        ty.insert("i64".into(), TypeInstance::I64);
-        ty.insert("bool".into(), TypeInstance::Bool);
-        Self {
-            parent: None,
-            var: Default::default(),
-            ty,
-        }
-    }
-
-    pub fn with_parent(parent: Rc<RefCell<Scope>>) -> Self {
-        Self {
-            parent: Some(parent),
-            var: Default::default(),
-            ty: Default::default(),
-        }
-    }
-
-    pub fn get_var(&self, name: &str) -> Option<Variable> {
-        if let Some(var) = self.var.get(name) {
-            return Some(var.clone());
-        }
-        self.parent.as_ref()?.borrow().get_var(name)
-    }
-
-    pub fn get_ty(&self, name: &str) -> Option<TypeInstance> {
-        if let Some(ty) = self.ty.get(name) {
-            return Some(ty.clone());
-        }
-        self.parent.as_ref()?.borrow().get_ty(name)
-    }
-}
-
-pub struct NameResolver {
-    scopes: Vec<Rc<RefCell<Scope>>>,
-    var_id: usize,
-}
-
-impl NameResolver {
-    pub fn new(program: &Program) -> Self {
-        let root = Rc::new(RefCell::new(Scope::root()));
-        let mut resolver = NameResolver {
-            scopes: vec![Rc::clone(&root)],
-            var_id: 0,
-        };
-        resolver.block(
-            root,
-            &Block {
-                statement: program.statement.clone(),
-                result: None,
-            },
-        );
-        resolver
-    }
-
-    pub fn statement(
-        &mut self,
-        parent: Rc<RefCell<Scope>>,
-        stmt: &Statement,
-    ) -> Rc<RefCell<Scope>> {
-        let scope = Scope::with_parent(Rc::clone(&parent));
-        let owned = Rc::new(RefCell::new(scope));
-        self.scopes.push(Rc::clone(&owned));
-        match stmt {
-            Statement::Nop => {}
-            Statement::Input(parser) => {
-                for (_, name) in parser.arg.iter() {
-                    owned.borrow_mut().var.insert(
-                        name.content.clone(),
-                        Variable {
-                            name: name.content.clone(),
-                            mangle: format!("_{}_{}", name.content, self.var_id),
-                            ty: Rc::new(RefCell::new(TypeInference::Unknown)),
-                        },
-                    );
-                    self.var_id += 1;
-                }
-            }
-            Statement::Expression(expr) => {
-                self.expression(Rc::clone(&owned), expr);
-            }
-            Statement::Assignment(assignment) => {
-                self.expression(Rc::clone(&parent), &assignment.rhs);
-                self.pattern(Rc::clone(&owned), &assignment.lhs);
-            }
-            Statement::Repeat(repeat) => {
-                self.expression(Rc::clone(&owned), &repeat.times);
-                self.block(Rc::clone(&owned), &repeat.block);
-            }
-            Statement::While(while_) => {
-                self.expression(Rc::clone(&owned), &while_.condition);
-                self.block(Rc::clone(&owned), &while_.block);
-            }
-        }
-        owned
-    }
-
-    pub fn expression(
-        &mut self,
-        parent: Rc<RefCell<Scope>>,
-        expr: &Expression,
-    ) -> Rc<RefCell<Scope>> {
-        match expr {
-            Expression::Block(block) => match block {
-                BlockExpression::Block(block) => {
-                    self.block(Rc::clone(&parent), block);
-                }
-                BlockExpression::If(if_) => {
-                    self.expression(Rc::clone(&parent), &if_.condition);
-                    self.block(Rc::clone(&parent), &if_.truthy);
-                    if let Some(falsy) = &if_.falsy {
-                        self.block(Rc::clone(&parent), falsy);
-                    }
-                }
-            },
-            Expression::Nonblock(nonblock) => match nonblock {
-                NonblockExpression::Literal(_) => {}
-                NonblockExpression::Path(_) => {}
-                NonblockExpression::Binary(binary) => {
-                    self.expression(Rc::clone(&parent), &binary.lhs);
-                    self.expression(Rc::clone(&parent), &binary.rhs);
-                }
-                NonblockExpression::Comparison(comparison) => {
-                    self.expression(Rc::clone(&parent), &comparison.first);
-                    for (_, rest) in comparison.chain.iter() {
-                        self.expression(Rc::clone(&parent), rest);
-                    }
-                }
-                NonblockExpression::Print(_) => {}
-                NonblockExpression::Select(select) => {
-                    self.expression(Rc::clone(&parent), &select.condition);
-                    self.expression(Rc::clone(&parent), &select.truthy);
-                    self.expression(Rc::clone(&parent), &select.falsy);
-                }
-                NonblockExpression::MakeTuple(make_tuple) => {
-                    for arg in make_tuple.args.iter() {
-                        self.expression(Rc::clone(&parent), arg);
-                    }
-                }
-                NonblockExpression::Parentheses(expr) => {
-                    self.expression(Rc::clone(&parent), &expr);
-                }
-            },
-        }
-        parent
-    }
-
-    pub fn block(&mut self, parent: Rc<RefCell<Scope>>, block: &Block) -> Rc<RefCell<Scope>> {
-        let scope = Scope::with_parent(parent);
-        let mut owned = Rc::new(RefCell::new(scope));
-        self.scopes.push(Rc::clone(&owned));
-        let result = Rc::clone(&owned);
-        for stmt in block.statement.iter() {
-            owned = self.statement(owned, stmt);
-        }
-        if let Some(result) = &block.result {
-            self.expression(owned, &result);
-        }
-        result
-    }
-
-    fn pattern(&mut self, parent: Rc<RefCell<Scope>>, pattern: &Pattern) -> Rc<RefCell<Scope>> {
-        match pattern {
-            Pattern::Ident(_) => {}
-            Pattern::Declaration(decl) => {
-                parent.borrow_mut().var.insert(
-                    decl.ident.content.clone(),
-                    Variable {
-                        name: decl.ident.content.clone(),
-                        mangle: format!("_{}_{}", decl.ident.content, self.var_id),
-                        ty: Rc::new(RefCell::new(TypeInference::Unknown)),
-                    },
-                );
-                self.var_id += 1;
-            }
-            Pattern::Tuple(args) => {
-                for arg in args.iter() {
-                    self.pattern(Rc::clone(&parent), arg);
-                }
-            }
-        }
-        parent
-    }
-}
+use super::{resolver::NameResolver, Scope, TypeInference, TypeInstance};
 
 pub struct TypeChecker {
     pub scopes: Vec<Rc<RefCell<Scope>>>,
     pub inference: Vec<Rc<RefCell<TypeInference>>>,
-    current: usize,
+    stack: Vec<Rc<RefCell<Scope>>>,
+    block_stack: Vec<Rc<RefCell<Scope>>>,
+    last: usize,
     tuple_id: usize,
 }
 
@@ -340,8 +24,10 @@ impl TypeChecker {
     pub fn from_name_resolver(resolver: NameResolver) -> Self {
         Self {
             scopes: resolver.scopes,
-            current: 0,
             inference: vec![],
+            stack: vec![],
+            block_stack: vec![],
+            last: 1usize,
             tuple_id: 0,
         }
     }
@@ -354,11 +40,11 @@ impl TypeChecker {
     }
 
     fn statement(&mut self, stmt: &Statement) {
-        self.current += 1;
-        let scope = Rc::clone(&self.scopes[self.current]);
         match stmt {
             Statement::Nop => {}
             Statement::Input(parser) => {
+                let scope = Rc::clone(&self.scopes[self.last]);
+                self.last += 1;
                 for (ty, name) in parser.arg.iter() {
                     let scope = scope.borrow_mut();
                     let Some(ty) = scope.get_ty(&ty.content) else {
@@ -369,15 +55,17 @@ impl TypeChecker {
                     let mut var_ty = var.ty.borrow_mut();
                     var_ty.unify(&mut constraint);
                 }
+                self.stack.push(scope);
             }
             Statement::Expression(expr) => {
                 self.expression(expr);
             }
             Statement::Assignment(assignment) => {
-                self.current -= 1;
+                let scope = Rc::clone(&self.scopes[self.last]);
+                self.last += 1;
                 let rhs = self.expression(&assignment.rhs);
-                self.current += 1;
                 let mut rhs_ty = rhs.borrow_mut();
+                self.stack.push(scope);
                 let pattern = self.pattern(&assignment.lhs);
                 rhs_ty.unify(&mut pattern.borrow_mut());
             }
@@ -389,12 +77,28 @@ impl TypeChecker {
                 self.expression(&while_.condition);
                 self.block(&while_.block);
             }
+            Statement::Function(function) => {
+                let block = Rc::clone(self.block_stack.last().unwrap());
+                let var = {
+                    let block = block.borrow_mut();
+                    block.get_var(&function.ident.content).unwrap()
+                };
+                let scope = Rc::clone(&self.scopes[self.last]);
+                self.last += 1;
+                self.stack.push(scope);
+                let mut args = vec![];
+                for arg in function.args.iter() {
+                    args.push(self.pattern(arg));
+                }
+                let result = self.block(&function.block);
+                TypeInference::Function { args, result }.unify(&mut var.ty.borrow_mut());
+                self.stack.pop();
+            }
         }
-        self.current -= 1;
     }
 
     fn expression(&mut self, expr: &Expression) -> Rc<RefCell<TypeInference>> {
-        let scope = Rc::clone(&self.scopes[self.current]);
+        let scope = Rc::clone(&self.stack.last().unwrap());
         let ty = Rc::new(RefCell::new(TypeInference::Unknown));
         self.inference.push(Rc::clone(&ty));
         match expr {
@@ -486,19 +190,33 @@ impl TypeChecker {
                     let mut expr_ty = expr.borrow_mut();
                     expr_ty.unify(&mut ty.borrow_mut());
                 }
+                NonblockExpression::Invocation(invocation) => {
+                    let func = self.expression(&invocation.callee);
+                    let mut args = vec![];
+                    for arg in invocation.args.iter() {
+                        args.push(Rc::clone(&self.expression(arg)));
+                    }
+                    TypeInference::Function {
+                        args,
+                        result: Rc::clone(&ty),
+                    }
+                    .unify(&mut func.borrow_mut());
+                }
             },
         };
         ty
     }
 
     fn block(&mut self, block: &Block) -> Rc<RefCell<TypeInference>> {
+        let begin = self.stack.len();
+        let scope = Rc::clone(&self.scopes[self.last]);
+        self.last += 1;
+        self.stack.push(Rc::clone(&scope));
+        self.block_stack.push(Rc::clone(&scope));
         let ty = Rc::new(RefCell::new(TypeInference::Unknown));
         self.inference.push(Rc::clone(&ty));
-        let result = self.current;
-        self.current += 1;
         for stmt in block.statement.iter() {
             self.statement(stmt);
-            self.current += 1;
         }
         if let Some(result) = &block.result {
             let expr = self.expression(&result);
@@ -507,7 +225,8 @@ impl TypeChecker {
         } else {
             TypeInference::Exact(TypeInstance::Unit).unify(&mut ty.borrow_mut());
         };
-        self.current = result;
+        self.stack.truncate(begin);
+        self.block_stack.pop();
         ty
     }
 
@@ -534,7 +253,7 @@ impl TypeChecker {
     }
 
     fn pattern(&mut self, pattern: &Pattern) -> Rc<RefCell<TypeInference>> {
-        let scope = Rc::clone(&self.scopes[self.current]);
+        let scope = Rc::clone(self.stack.last().unwrap());
         match pattern {
             Pattern::Ident(ident) => {
                 let scope = scope.borrow();

@@ -1,4 +1,4 @@
-use translate::Translator;
+use translate::codegen::Codegen;
 use winnow::{Located, Parser};
 
 mod args;
@@ -13,6 +13,6 @@ fn main() {
     let source_content = std::fs::read_to_string(args.source).unwrap();
     let input = Located::new(source_content.as_str());
     let output = syntax::parse_program.parse(input).unwrap();
-    let c = Translator::translate(&output);
+    let c = Codegen::translate(&output);
     print!("{c}");
 }

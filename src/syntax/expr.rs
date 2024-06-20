@@ -28,10 +28,12 @@ pub enum NonblockExpression {
     Print(FormatString),
     Select(Select),
     MakeTuple(MakeTuple),
+    Invocation(Invocation),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
+        parse_invocation.map(NonblockExpression::Invocation),
         parse_select.map(NonblockExpression::Select),
         parse_logical.map(NonblockExpression::Binary),
         parse_comparison.map(NonblockExpression::Comparison),
@@ -40,8 +42,8 @@ pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpre
         parse_format_string.map(NonblockExpression::Print),
         parse_literal.map(NonblockExpression::Literal),
         parse_path.map(NonblockExpression::Path),
-        parse_make_tuple.map(NonblockExpression::MakeTuple),
         parse_parentheses,
+        parse_make_tuple.map(NonblockExpression::MakeTuple),
     ))
     .parse_next(s)
 }
@@ -222,10 +224,13 @@ pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<BinaryOperation> {
 
 pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
     alt((
+        parse_invocation
+            .map(NonblockExpression::Invocation)
+            .map(Expression::Nonblock),
+        parse_parentheses.map(Expression::Nonblock),
         parse_make_tuple
             .map(NonblockExpression::MakeTuple)
             .map(Expression::Nonblock),
-        parse_parentheses.map(Expression::Nonblock),
         parse_format_string
             .map(NonblockExpression::Print)
             .map(Expression::Nonblock),
@@ -382,15 +387,22 @@ pub struct MakeTuple {
 }
 
 pub fn parse_make_tuple(s: &mut Located<&str>) -> PResult<MakeTuple> {
-    seq!(
-        _: TokenKind::PunctLeftParenthesis,
-        _: opt(TokenKind::White),
-        separated(2.., parse_expression, (opt(TokenKind::White), TokenKind::PunctComma, opt(TokenKind::White))),
-        _: opt(TokenKind::White),
-        _: opt(TokenKind::PunctComma),
-        _: opt(TokenKind::White),
-        _: TokenKind::PunctRightParenthesis,
-    ).map(|(args, )| MakeTuple { args }).parse_next(s)
+    delimited(
+        TokenKind::PunctLeftParenthesis,
+        separated(
+            0..,
+            preceded(opt(TokenKind::White), parse_expression),
+            (opt(TokenKind::White), TokenKind::PunctComma),
+        ),
+        (
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
+            opt(TokenKind::White),
+            TokenKind::PunctRightParenthesis,
+        ),
+    )
+    .map(|args| MakeTuple { args })
+    .parse_next(s)
 }
 
 pub fn parse_parentheses(s: &mut Located<&str>) -> PResult<NonblockExpression> {
@@ -410,4 +422,26 @@ pub fn parse_parentheses(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     )
     .map(|expr| NonblockExpression::Parentheses(Box::new(expr)))
     .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Invocation {
+    pub callee: Box<Expression>,
+    pub args: Vec<Expression>,
+}
+
+pub fn parse_invocation(s: &mut Located<&str>) -> PResult<Invocation> {
+    seq!(
+        alt((
+            parse_path.map(NonblockExpression::Path).map(Expression::Nonblock),
+            parse_parentheses.map(Expression::Nonblock),
+        )),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctLeftParenthesis,
+        separated(0.., preceded(opt(TokenKind::White), parse_expression), (opt(TokenKind::White), TokenKind::PunctComma)),
+        _: opt(TokenKind::White),
+        _: opt(TokenKind::PunctComma),
+        _: opt(TokenKind::White),
+        _: TokenKind::PunctRightParenthesis,
+    ).map(|(callee, args)|Invocation { callee: Box::new(callee), args }).parse_next(s)
 }

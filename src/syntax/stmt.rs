@@ -19,11 +19,13 @@ pub enum Statement {
     Assignment(Assignment),
     Repeat(Repeat),
     While(While),
+    Function(Function),
 }
 
 pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
     alt((
         TokenKind::PunctSemicolon.value(Statement::Nop),
+        parse_function.map(Statement::Function),
         parse_input_parser.map(Statement::Input),
         parse_repeat.map(Statement::Repeat),
         parse_while.map(Statement::While),
@@ -69,23 +71,30 @@ pub enum Pattern {
 
 pub fn parse_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
     alt((
-        TokenKind::Identifier.map(Pattern::Ident),
         parse_declaration.map(Pattern::Declaration),
+        TokenKind::Identifier.map(Pattern::Ident),
         parse_tuple_pattern,
     ))
     .parse_next(s)
 }
 
 pub fn parse_tuple_pattern(s: &mut Located<&str>) -> PResult<Pattern> {
-    seq!(
-        _: TokenKind::PunctLeftParenthesis,
-        _: opt(TokenKind::White),
-        separated(2.., parse_pattern, (opt(TokenKind::White), TokenKind::PunctComma, opt(TokenKind::White))),
-        _: opt(TokenKind::White),
-        _: opt(TokenKind::PunctComma),
-        _: opt(TokenKind::White),
-        _: TokenKind::PunctRightParenthesis,
-    ).map(|(args, )| Pattern::Tuple(args)).parse_next(s)
+    delimited(
+        TokenKind::PunctLeftParenthesis,
+        separated(
+            0..,
+            preceded(opt(TokenKind::White), parse_pattern),
+            (opt(TokenKind::White), TokenKind::PunctComma),
+        ),
+        (
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
+            opt(TokenKind::White),
+            TokenKind::PunctRightParenthesis,
+        ),
+    )
+    .map(Pattern::Tuple)
+    .parse_next(s)
 }
 
 #[derive(Debug, Clone)]
@@ -165,5 +174,41 @@ pub fn parse_while(s: &mut Located<&str>) -> PResult<While> {
         parse_block,
     )
     .map(|(condition, block)| While { condition, block })
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub ident: Token,
+    pub args: Vec<Pattern>,
+    pub block: Block,
+}
+
+fn is_pattern_typed(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Ident(_) => false,
+        Pattern::Declaration(_) => true,
+        Pattern::Tuple(args) => args.iter().all(is_pattern_typed),
+    }
+}
+
+pub fn parse_function(s: &mut Located<&str>) -> PResult<Function> {
+    seq!(
+        _: TokenKind::KeywordFn,
+        _: opt(TokenKind::White),
+        TokenKind::Identifier,
+        _: opt(TokenKind::White),
+        parse_pattern,
+        _: opt(TokenKind::White),
+        parse_block,
+    )
+    .verify(|(_, args, _)| is_pattern_typed(args))
+    .verify_map(|(ident, args, block)| {
+        if let Pattern::Tuple(args) = args {
+            Some(Function { ident, args, block })
+        } else {
+            None
+        }
+    })
     .parse_next(s)
 }

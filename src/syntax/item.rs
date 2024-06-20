@@ -22,27 +22,28 @@ pub enum Type {
     Tuple(Vec<Self>),
 }
 
-pub fn parse_type(input: &mut Located<&str>) -> PResult<Type> {
+pub fn parse_type(s: &mut Located<&str>) -> PResult<Type> {
     alt((
         parse_type_path.map(Type::Path),
         parse_tuple.map(Type::Tuple),
     ))
-    .parse_next(input)
+    .parse_next(s)
 }
 
-pub fn parse_tuple(input: &mut Located<&str>) -> PResult<Vec<Type>> {
+pub fn parse_tuple(s: &mut Located<&str>) -> PResult<Vec<Type>> {
     delimited(
         TokenKind::PunctLeftParenthesis,
         separated(
-            0..,
+            1..,
             preceded(opt(TokenKind::White), parse_type),
-            TokenKind::PunctComma,
+            (opt(TokenKind::White), TokenKind::PunctComma),
         ),
         (
-            opt((opt(TokenKind::White), TokenKind::PunctComma)),
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
             opt(TokenKind::White),
             TokenKind::PunctRightParenthesis,
         ),
     )
-    .parse_next(input)
+    .parse_next(s)
 }
