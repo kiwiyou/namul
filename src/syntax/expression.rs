@@ -1,13 +1,14 @@
 use winnow::{
-    combinator::{alt, delimited, opt, preceded, repeat, separated},
+    combinator::{alt, delimited, opt, preceded, repeat, separated, separated_pair},
     seq, Located, PResult, Parser,
 };
 
 use super::{
     format::{parse_format_string, FormatString},
+    item::{parse_type, Type},
     literal::{parse_literal, Literal},
     path::{parse_path, Path},
-    stmt::{parse_statement, Statement},
+    statement::{parse_statement, Statement},
     Token, TokenKind,
 };
 
@@ -28,10 +29,16 @@ pub enum NonblockExpression {
     Select(Select),
     MakeTuple(MakeTuple),
     Invocation(Invocation),
+    Assignment(Assignment),
+    Declaration(Declaration),
+    CompoundAssignment(CompoundAssignment),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
+        parse_assignment.map(NonblockExpression::Assignment),
+        parse_compound_assignment.map(NonblockExpression::CompoundAssignment),
+        parse_declaration.map(NonblockExpression::Declaration),
         parse_invocation.map(NonblockExpression::Invocation),
         parse_select.map(NonblockExpression::Select),
         parse_logical.map(NonblockExpression::Binary),
@@ -448,6 +455,118 @@ pub fn parse_return(s: &mut Located<&str>) -> PResult<Return> {
     )
     .map(|value| Return {
         value: Box::new(value),
+    })
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub enum Assignee {
+    Declaration(Declaration),
+    Path(Path),
+    Tuple(Vec<Assignee>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Declaration {
+    pub ty: Type,
+    pub ident: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct Assignment {
+    pub lhs: Assignee,
+    pub rhs: Box<Expression>,
+}
+
+pub fn parse_assignment(s: &mut Located<&str>) -> PResult<Assignment> {
+    separated_pair(
+        parse_assignee,
+        (
+            opt(TokenKind::White),
+            TokenKind::PunctEqualsSign,
+            opt(TokenKind::White),
+        ),
+        parse_expression,
+    )
+    .map(|(lhs, rhs)| Assignment {
+        lhs,
+        rhs: Box::new(rhs),
+    })
+    .parse_next(s)
+}
+
+pub fn parse_assignee(s: &mut Located<&str>) -> PResult<Assignee> {
+    alt((
+        parse_declaration.map(Assignee::Declaration),
+        parse_path.map(Assignee::Path),
+        delimited(
+            TokenKind::PunctLeftParenthesis,
+            preceded(opt(TokenKind::White), parse_assignee),
+            (opt(TokenKind::White), TokenKind::PunctRightParenthesis),
+        ),
+        parse_assignee_tuple.map(Assignee::Tuple),
+    ))
+    .parse_next(s)
+}
+
+pub fn parse_declaration(s: &mut Located<&str>) -> PResult<Declaration> {
+    separated_pair(parse_type, TokenKind::White, TokenKind::Identifier)
+        .map(|(ty, ident)| Declaration { ty, ident })
+        .parse_next(s)
+}
+
+pub fn parse_assignee_tuple(s: &mut Located<&str>) -> PResult<Vec<Assignee>> {
+    delimited(
+        TokenKind::PunctLeftParenthesis,
+        separated(
+            0..,
+            preceded(opt(TokenKind::White), parse_assignee),
+            (opt(TokenKind::White), TokenKind::PunctComma),
+        ),
+        (
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
+            opt(TokenKind::White),
+            TokenKind::PunctRightParenthesis,
+        ),
+    )
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub enum Place {
+    Path(Path),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompoundAssignment {
+    pub lhs: Place,
+    pub op: Token,
+    pub rhs: Box<Expression>,
+}
+
+pub fn parse_place(s: &mut Located<&str>) -> PResult<Place> {
+    alt((parse_path.map(Place::Path),)).parse_next(s)
+}
+
+pub fn parse_compound_assignment(s: &mut Located<&str>) -> PResult<CompoundAssignment> {
+    seq!(
+        parse_place,
+        _: opt(TokenKind::White),
+        alt((
+            TokenKind::PunctPlusSignEqualsSign,
+            TokenKind::PunctHyphenMinusEqualsSign,
+            TokenKind::PunctAsteriskEqualsSign,
+            TokenKind::PunctSolidusEqualsSign,
+            TokenKind::PunctPercentSignEqualsSign,
+        )),
+        _: opt(TokenKind::White),
+        parse_expression,
+    )
+    .map(|(lhs, op, rhs)| CompoundAssignment {
+        lhs,
+        op,
+        rhs: Box::new(rhs),
     })
     .parse_next(s)
 }

@@ -1,8 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expr::{Block, BlockExpression, Expression, NonblockExpression},
-    stmt::{Pattern, Statement},
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place},
+    path::Path,
+    statement::{Pattern, Statement},
     Program,
 };
 
@@ -55,21 +56,14 @@ impl NameResolver {
                 scope
             }
             Statement::Expression(expr) => self.expression(parent, expr),
-            Statement::Assignment(assignment) => {
-                let scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent))));
-                self.scopes.push(Rc::clone(&scope));
-                self.expression(parent, &assignment.rhs);
-                self.pattern(Rc::clone(&scope), &assignment.lhs);
-                scope
-            }
             Statement::Repeat(repeat) => {
-                self.expression(Rc::clone(&parent), &repeat.times);
-                self.block(Rc::clone(&parent), &repeat.block);
+                let scope = self.expression(Rc::clone(&parent), &repeat.times);
+                self.block(scope, &repeat.block);
                 parent
             }
             Statement::While(while_) => {
-                self.expression(Rc::clone(&parent), &while_.condition);
-                self.block(Rc::clone(&parent), &while_.block);
+                let scope = self.expression(Rc::clone(&parent), &while_.condition);
+                self.block(scope, &while_.block);
                 parent
             }
             Statement::Function(function) => {
@@ -105,51 +99,85 @@ impl NameResolver {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => {
                     self.block(Rc::clone(&parent), block);
+                    parent
                 }
                 BlockExpression::If(if_) => {
-                    self.expression(Rc::clone(&parent), &if_.condition);
-                    self.block(Rc::clone(&parent), &if_.truthy);
+                    let scope = self.expression(Rc::clone(&parent), &if_.condition);
+                    self.block(Rc::clone(&scope), &if_.truthy);
                     if let Some(falsy) = &if_.falsy {
-                        self.block(Rc::clone(&parent), falsy);
+                        self.block(scope, falsy);
                     }
+                    parent
                 }
             },
             Expression::Nonblock(nonblock) => match nonblock {
-                NonblockExpression::Literal(_) => {}
-                NonblockExpression::Path(_) => {}
+                NonblockExpression::Literal(_) => parent,
+                NonblockExpression::Path(_) => parent,
                 NonblockExpression::Binary(binary) => {
-                    self.expression(Rc::clone(&parent), &binary.lhs);
-                    self.expression(Rc::clone(&parent), &binary.rhs);
+                    let mut scope = parent;
+                    scope = self.expression(scope, &binary.lhs);
+                    scope = self.expression(scope, &binary.rhs);
+                    scope
                 }
                 NonblockExpression::Comparison(comparison) => {
-                    self.expression(Rc::clone(&parent), &comparison.first);
+                    let mut scope = parent;
+                    scope = self.expression(scope, &comparison.first);
                     for (_, rest) in comparison.chain.iter() {
-                        self.expression(Rc::clone(&parent), rest);
+                        scope = self.expression(scope, rest);
                     }
+                    scope
                 }
-                NonblockExpression::Print(_) => {}
+                NonblockExpression::Print(_) => parent,
                 NonblockExpression::Select(select) => {
-                    self.expression(Rc::clone(&parent), &select.condition);
-                    self.expression(Rc::clone(&parent), &select.truthy);
-                    self.expression(Rc::clone(&parent), &select.falsy);
+                    let scope = self.expression(Rc::clone(&parent), &select.condition);
+                    self.expression(Rc::clone(&scope), &select.truthy);
+                    self.expression(scope, &select.falsy);
+                    parent
                 }
                 NonblockExpression::MakeTuple(make_tuple) => {
+                    let mut scope = Rc::clone(&parent);
                     for arg in make_tuple.args.iter() {
-                        self.expression(Rc::clone(&parent), arg);
+                        scope = self.expression(scope, arg);
                     }
+                    scope
                 }
-                NonblockExpression::Parentheses(expr) => {
-                    self.expression(Rc::clone(&parent), &expr);
-                }
+                NonblockExpression::Parentheses(expr) => self.expression(Rc::clone(&parent), &expr),
                 NonblockExpression::Invocation(invocation) => {
-                    self.expression(Rc::clone(&parent), &invocation.callee);
+                    let mut scope = parent;
+                    scope = self.expression(scope, &invocation.callee);
+                    let mut inside = Rc::clone(&scope);
                     for arg in invocation.args.iter() {
-                        self.expression(Rc::clone(&parent), arg);
+                        inside = self.expression(inside, arg);
                     }
+                    scope
+                }
+                NonblockExpression::Declaration(declaration) => {
+                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
+                    self.scopes.push(Rc::clone(&scope));
+                    let id = self.var_id;
+                    self.var_id += 1;
+                    scope.borrow_mut().var.insert(
+                        declaration.ident.content.clone(),
+                        Variable {
+                            mangle: format!("_{}_{}", declaration.ident.content, id),
+                            ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                        },
+                    );
+                    scope
+                }
+                NonblockExpression::Assignment(assignment) => {
+                    self.expression(Rc::clone(&parent), &assignment.rhs);
+                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
+                    self.scopes.push(Rc::clone(&scope));
+                    self.assignee(&mut scope.borrow_mut(), &assignment.lhs);
+                    scope
+                }
+                NonblockExpression::CompoundAssignment(compound) => {
+                    self.expression(Rc::clone(&parent), &compound.rhs);
+                    parent
                 }
             },
         }
-        parent
     }
 
     pub fn block(&mut self, parent: Rc<RefCell<Scope>>, block: &Block) {
@@ -181,6 +209,35 @@ impl NameResolver {
             Pattern::Tuple(args) => {
                 for arg in args.iter() {
                     self.pattern(Rc::clone(&parent), arg);
+                }
+            }
+        }
+    }
+
+    fn assignee(&mut self, scope: &mut Scope, assignee: &Assignee) {
+        match assignee {
+            Assignee::Declaration(declaration) => {
+                let id = self.var_id;
+                self.var_id += 1;
+                let name = &declaration.ident.content;
+                scope.var.insert(
+                    name.clone(),
+                    Variable {
+                        mangle: format!("_{name}_{id}"),
+                        ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                    },
+                );
+            }
+            Assignee::Path(path) => match path {
+                Path::Simple(simple) => {
+                    let Some(_) = scope.get_var(&simple.content) else {
+                        panic!("Could not find {} in scope.", simple.content);
+                    };
+                }
+            },
+            Assignee::Tuple(args) => {
+                for arg in args.iter() {
+                    self.assignee(scope, arg);
                 }
             }
         }

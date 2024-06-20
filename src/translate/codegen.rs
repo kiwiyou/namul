@@ -6,14 +6,15 @@ use std::{
 };
 
 use crate::syntax::{
-    expr::{
-        BinaryOperation, Block, BlockExpression, Comparison, Expression, If, Invocation, MakeTuple,
-        NonblockExpression, Select,
+    expression::{
+        Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
+        CompoundAssignment, Declaration, Expression, If, Invocation, MakeTuple, NonblockExpression,
+        Place, Select,
     },
     format::{FormatFragment, FormatString},
     literal::Literal,
     path::Path,
-    stmt::{Pattern, Statement},
+    statement::{Pattern, Statement},
     Program, TokenKind,
 };
 
@@ -31,7 +32,7 @@ pub struct Codegen {
     block_stack: Vec<Rc<RefCell<Scope>>>,
     last_scope: usize,
     last_infer: usize,
-    counter: usize,
+    var_id: usize,
 }
 
 #[derive(Debug)]
@@ -48,12 +49,17 @@ impl Codegen {
         match inference {
             TypeInference::Exact(exact) => Some(exact.clone()),
             TypeInference::Integer => Some(TypeInstance::I32),
+            TypeInference::Never => Some(TypeInstance::Never),
             TypeInference::Unknown => None,
             TypeInference::Error => None,
             TypeInference::Tuple(tuple) => {
                 let mut args = vec![];
                 for arg in tuple.iter() {
-                    args.push(self.synthesize(&arg.borrow())?);
+                    let ty = self.synthesize(&arg.borrow())?;
+                    if ty == TypeInstance::Never {
+                        return Some(TypeInstance::Never);
+                    }
+                    args.push(ty);
                 }
                 let instance = TypeInstance::Tuple {
                     id: 0,
@@ -106,9 +112,16 @@ impl Codegen {
             panic!("Could not deduce type.");
         };
         self.last_infer += 1;
+        let len = self.stack.len();
         let lhs = self.expression(&binary.lhs);
+        self.stack.truncate(len);
         let rhs = self.expression(&binary.rhs);
-        let result = match (lhs.ty, binary.operator.kind, rhs.ty) {
+        self.stack.truncate(len);
+        let mut decl = String::new();
+        let mut global = String::new();
+        let mut effect = String::new();
+        let mut immediate = String::new();
+        match (lhs.ty, binary.operator.kind, rhs.ty) {
             (
                 TypeInstance::I32 | TypeInstance::I64,
                 TokenKind::PunctPlusSign
@@ -117,36 +130,45 @@ impl Codegen {
                 | TokenKind::PunctSolidus
                 | TokenKind::PunctPercentSign,
                 TypeInstance::I32 | TypeInstance::I64,
-            ) => Intermediate {
-                ty,
-                decl: lhs.decl + &rhs.decl,
-                global: lhs.global + &rhs.global,
-                effect: lhs.effect + &rhs.effect,
-                immediate: format!(
-                    "({} {} {})",
-                    lhs.immediate, binary.operator.content, rhs.immediate
-                ),
-            },
-            (
+            )
+            | (
                 TypeInstance::Bool,
                 TokenKind::PunctAmpersandAmpersand | TokenKind::PunctVerticalLineVerticalLine,
                 TypeInstance::Bool,
-            ) => Intermediate {
-                ty,
-                decl: lhs.decl + &rhs.decl,
-                global: lhs.global + &rhs.global,
-                effect: lhs.effect + &rhs.effect,
-                immediate: format!(
-                    "({} {} {})",
-                    lhs.immediate, binary.operator.content, rhs.immediate
-                ),
-            },
+            ) => {
+                decl.push_str(&lhs.decl);
+                decl.push_str(&rhs.decl);
+                global.push_str(&lhs.global);
+                global.push_str(&rhs.global);
+                effect.push_str(&lhs.effect);
+                effect.push_str(&rhs.effect);
+                if ty != TypeInstance::Never {
+                    let id = self.var_id;
+                    self.var_id += 1;
+                    writeln!(
+                        effect,
+                        "{} b{id} = {} {} {}",
+                        ty.mapped(),
+                        lhs.immediate,
+                        binary.operator.content,
+                        rhs.immediate
+                    )
+                    .unwrap();
+                    immediate = format!("b{id}");
+                }
+            }
             (l, _, r) => panic!(
                 "Unsupported operation `{l}` {} `{r}`",
                 binary.operator.content
             ),
-        };
-        result
+        }
+        Intermediate {
+            ty,
+            decl,
+            global,
+            effect,
+            immediate,
+        }
     }
 
     pub fn literal(&mut self, literal: &Literal) -> Intermediate {
@@ -187,8 +209,8 @@ impl Codegen {
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
-        let id = self.counter;
-        self.counter += 1;
+        let id = self.var_id;
+        self.var_id += 1;
         writeln!(effect, "char cmp{id} = 1;").unwrap();
         let first = self.expression(&comparison.first);
         decl.push_str(&first.decl);
@@ -196,13 +218,21 @@ impl Codegen {
         effect.push_str(&first.effect);
         let mut prev_ty = first.ty;
         let mut prev = first.immediate;
+        let mut close = 0;
+        let mut is_never = false;
         for (op, next) in comparison.chain.iter() {
             let next = self.expression(next);
+            if is_never {
+                continue;
+            }
             decl.push_str(&next.decl);
             global.push_str(&next.decl);
             writeln!(effect, "if (cmp{id}) {{").unwrap();
             effect.push_str(&next.effect);
             match (&prev_ty, op.kind, &next.ty) {
+                (TypeInstance::Never, _, _) | (_, _, TypeInstance::Never) => {
+                    is_never = true;
+                }
                 (
                     TypeInstance::I32 | TypeInstance::I64,
                     _,
@@ -233,10 +263,11 @@ impl Codegen {
                     op.content, next.ty
                 ),
             }
+            close += 1;
             prev_ty = next.ty;
             prev = next.immediate;
         }
-        for _ in 0..comparison.chain.len() {
+        for _ in 0..close {
             effect.push('}');
         }
         effect.push('\n');
@@ -245,7 +276,11 @@ impl Codegen {
             decl,
             global,
             effect,
-            immediate: format!("cmp{id}"),
+            immediate: if is_never {
+                "".into()
+            } else {
+                format!("cmp{id}")
+            },
         }
     }
 
@@ -306,14 +341,18 @@ impl Codegen {
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
+        let len = self.stack.len();
         let condition = self.expression(&if_.condition);
         decl.push_str(&condition.decl);
         global.push_str(&condition.decl);
         effect.push_str(&condition.effect);
-        let result = if let Some(falsy) = &if_.falsy {
-            let id = self.counter;
-            self.counter += 1;
-            if ty != TypeInstance::Unit {
+        let mut immediate = String::new();
+        if condition.ty == TypeInstance::Never {
+            // empty
+        } else if let Some(falsy) = &if_.falsy {
+            let id = self.var_id;
+            self.var_id += 1;
+            if ty != TypeInstance::Never {
                 writeln!(effect, "{} if{id};", ty.mapped()).unwrap();
             }
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
@@ -321,7 +360,7 @@ impl Codegen {
             decl.push_str(&truthy.decl);
             global.push_str(&truthy.global);
             effect.push_str(&truthy.effect);
-            if ty != TypeInstance::Unit {
+            if ty != TypeInstance::Never {
                 writeln!(effect, "if{id} = {};", truthy.immediate).unwrap();
             }
             writeln!(effect, "}} else {{").unwrap();
@@ -329,22 +368,15 @@ impl Codegen {
             decl.push_str(&falsy.decl);
             global.push_str(&falsy.global);
             effect.push_str(&falsy.effect);
-            if ty != TypeInstance::Unit {
+            if ty != TypeInstance::Never {
                 writeln!(effect, "if{id} = {};", falsy.immediate).unwrap();
             }
             writeln!(effect, "}}").unwrap();
-            let immediate = if ty == TypeInstance::Unit {
+            immediate = if ty == TypeInstance::Never {
                 "".into()
             } else {
                 format!("if{id}")
             };
-            Intermediate {
-                ty,
-                decl,
-                global,
-                effect,
-                immediate,
-            }
         } else {
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
             let truthy = self.block(&if_.truthy);
@@ -352,15 +384,15 @@ impl Codegen {
             global.push_str(&truthy.global);
             effect.push_str(&truthy.effect);
             writeln!(effect, "}}").unwrap();
-            Intermediate {
-                ty,
-                decl,
-                global,
-                effect,
-                immediate: "".into(),
-            }
         };
-        result
+        self.stack.truncate(len);
+        Intermediate {
+            ty,
+            decl,
+            global,
+            effect,
+            immediate,
+        }
     }
 
     pub fn select(&mut self, select: &Select) -> Intermediate {
@@ -372,38 +404,47 @@ impl Codegen {
         let mut decl = String::new();
         let mut global = String::new();
         let mut effect = String::new();
+        let len = self.stack.len();
         let condition = self.expression(&select.condition);
+        let inside = self.stack.len();
         decl.push_str(&condition.decl);
         global.push_str(&condition.decl);
         effect.push_str(&condition.effect);
-        let if_id = self.counter;
-        self.counter += 1;
-        if ty != TypeInstance::Unit {
-            writeln!(effect, "{} if_{if_id};", ty.mapped()).unwrap();
+        let id = self.var_id;
+        self.var_id += 1;
+        if ty != TypeInstance::Never {
+            writeln!(effect, "{} if{id};", ty.mapped()).unwrap();
         }
         writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
         let truthy = self.expression(&select.truthy);
+        self.stack.truncate(inside);
         decl.push_str(&truthy.decl);
         global.push_str(&truthy.global);
         effect.push_str(&truthy.effect);
-        if ty != TypeInstance::Unit {
-            writeln!(effect, "if_{if_id} = {};", truthy.immediate).unwrap();
+        if ty != TypeInstance::Never {
+            writeln!(effect, "if{id} = {};", truthy.immediate).unwrap();
         }
         writeln!(effect, "}} else {{").unwrap();
         let falsy = self.expression(&select.falsy);
+        self.stack.truncate(len);
         decl.push_str(&falsy.decl);
         global.push_str(&falsy.global);
         effect.push_str(&falsy.effect);
-        if ty != TypeInstance::Unit {
-            writeln!(effect, "if_{if_id} = {};", falsy.immediate).unwrap();
+        if ty != TypeInstance::Never {
+            writeln!(effect, "if{id} = {};", falsy.immediate).unwrap();
         }
         writeln!(effect, "}}").unwrap();
+        let immediate = if ty == TypeInstance::Never {
+            "".into()
+        } else {
+            format!("if{id}")
+        };
         Intermediate {
             ty,
             decl,
             global,
             effect,
-            immediate: format!("if_{if_id}"),
+            immediate,
         }
     }
 
@@ -427,8 +468,8 @@ impl Codegen {
             writeln!(definition, "struct {ty_mapped} {{").unwrap();
         }
         let mut construct = String::new();
-        let mt_id = self.counter;
-        self.counter += 1;
+        let mt_id = self.var_id;
+        self.var_id += 1;
         write!(construct, "{ty_mapped} mt{mt_id} = {{").unwrap();
         for (i, arg) in make_tuple.args.iter().enumerate() {
             let arg = self.expression(arg);
@@ -442,7 +483,12 @@ impl Codegen {
             }
         }
         writeln!(construct, "}};").unwrap();
-        effect.push_str(&construct);
+        let immediate = if ty != TypeInstance::Never {
+            effect.push_str(&construct);
+            format!("mt{mt_id}")
+        } else {
+            "".into()
+        };
         if is_new {
             writeln!(definition, "}};").unwrap();
             global.push_str(&definition);
@@ -452,7 +498,7 @@ impl Codegen {
             decl,
             global,
             effect,
-            immediate: format!("mt{mt_id}"),
+            immediate,
         }
     }
 
@@ -491,40 +537,8 @@ impl Codegen {
                 global.push_str(&expr.global);
                 effect.push_str(&expr.effect);
             }
-            Statement::Assignment(assignment) => {
-                let scope = Rc::clone(&self.scopes[self.last_scope]);
-                self.last_scope += 1;
-                let mut rhs = self.expression(&assignment.rhs);
-                decl.push_str(&rhs.decl);
-                global.push_str(&rhs.global);
-                effect.push_str(&rhs.effect);
-                self.stack.push(Rc::clone(&scope));
-                let scope = scope.borrow();
-                match &assignment.lhs {
-                    Pattern::Ident(ident) => {
-                        let var = scope.get_var(&ident.content).unwrap();
-                        writeln!(effect, "{} = {};", var.mangle, rhs.immediate).unwrap();
-                    }
-                    Pattern::Declaration(declaration) => {
-                        let var = scope.get_var(&declaration.ident.content).unwrap();
-                        let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
-                            panic!("Could not deduce type.");
-                        };
-                        writeln!(
-                            effect,
-                            "{} {} = {};",
-                            var_ty.mapped(),
-                            var.mangle,
-                            rhs.immediate
-                        )
-                        .unwrap();
-                    }
-                    Pattern::Tuple(args) => {
-                        self.assign_pattern(&mut effect, &scope, &mut rhs.immediate, &args);
-                    }
-                }
-            }
             Statement::Repeat(repeat) => {
+                let len = self.stack.len();
                 let times = self.expression(&repeat.times);
                 decl.push_str(&times.decl);
                 global.push_str(&times.global);
@@ -540,29 +554,36 @@ impl Codegen {
                 )
                 .unwrap();
                 let block = self.block(&repeat.block);
+                self.stack.truncate(len);
                 decl.push_str(&block.decl);
                 global.push_str(&block.global);
                 effect.push_str(&block.effect);
                 writeln!(effect, "}}").unwrap();
             }
             Statement::While(while_) => {
+                let len = self.stack.len();
                 let condition = self.expression(&while_.condition);
+                let block = self.block(&while_.block);
                 decl.push_str(&condition.decl);
                 global.push_str(&condition.global);
-                if condition.ty != TypeInstance::Bool {
-                    panic!(
-                        "Could not repeat while condition of type `{}`",
-                        condition.ty
-                    );
+                if condition.ty != TypeInstance::Never {
+                    if condition.ty != TypeInstance::Bool {
+                        panic!(
+                            "Could not repeat while condition of type `{}`",
+                            condition.ty
+                        );
+                    }
+                    writeln!(effect, "for(;;) {{").unwrap();
+                    effect.push_str(&condition.effect);
+                    writeln!(effect, "if (!{}) break;", condition.immediate).unwrap();
+                    self.stack.truncate(len);
+                    decl.push_str(&block.decl);
+                    global.push_str(&block.global);
+                    effect.push_str(&block.effect);
+                    writeln!(effect, "}}").unwrap();
+                } else {
+                    effect.push_str(&condition.effect);
                 }
-                writeln!(effect, "for(;;) {{").unwrap();
-                effect.push_str(&condition.effect);
-                writeln!(effect, "if (!{}) break;", condition.immediate).unwrap();
-                let block = self.block(&while_.block);
-                decl.push_str(&block.decl);
-                global.push_str(&block.global);
-                effect.push_str(&block.effect);
-                writeln!(effect, "}}").unwrap();
             }
             Statement::Function(function) => {
                 let block = Rc::clone(self.block_stack.last().unwrap());
@@ -612,14 +633,16 @@ impl Codegen {
                 let block = self.block(&function.block);
                 self.stack.pop();
                 global.push_str(&block.effect);
-                writeln!(global, "return {};", block.immediate).unwrap();
+                if block.ty != TypeInstance::Never {
+                    writeln!(global, "return {};", block.immediate).unwrap();
+                }
                 writeln!(global, "}}").unwrap();
                 decl.push_str(&block.decl);
                 global.push_str(&block.global);
             }
         }
         Intermediate {
-            ty: TypeInstance::Unit,
+            ty: TypeInstance::Never,
             decl,
             global,
             effect,
@@ -681,6 +704,11 @@ impl Codegen {
                 NonblockExpression::MakeTuple(make_tuple) => self.make_tuple(make_tuple),
                 NonblockExpression::Parentheses(expr) => self.expression(expr),
                 NonblockExpression::Invocation(invocation) => self.invocation(invocation),
+                NonblockExpression::Declaration(declaration) => self.declaration(declaration),
+                NonblockExpression::Assignment(assignment) => self.assignment(assignment),
+                NonblockExpression::CompoundAssignment(compound) => {
+                    self.compound_assignment(compound)
+                }
             },
         }
     }
@@ -699,7 +727,7 @@ impl Codegen {
             tuples: Default::default(),
             last_scope: 1,
             last_infer: 0,
-            counter: 0,
+            var_id: 0,
             stack: vec![],
             block_stack: vec![],
         };
@@ -795,13 +823,14 @@ impl Codegen {
         let mut global = String::new();
         let mut effect = String::new();
         let callee = self.expression(&invocation.callee);
+        let len = self.stack.len();
         decl.push_str(&callee.decl);
         global.push_str(&callee.global);
         effect.push_str(&callee.effect);
         let mut call = String::new();
-        let id = self.counter;
-        self.counter += 1;
-        if ty == TypeInstance::Unit {
+        let id = self.var_id;
+        self.var_id += 1;
+        if ty == TypeInstance::Never {
             write!(call, "{}(", callee.immediate).unwrap();
         } else {
             write!(call, "{} inv{id} = {}(", ty.mapped(), callee.immediate).unwrap();
@@ -816,14 +845,146 @@ impl Codegen {
             effect.push_str(&arg.effect);
             call.push_str(&arg.immediate);
         }
+        self.stack.truncate(len);
         writeln!(call, ");").unwrap();
         effect.push_str(&call);
+        let immediate = if ty == TypeInstance::Never {
+            "".into()
+        } else {
+            format!("inv{id}")
+        };
         Intermediate {
             ty,
             decl,
             global,
             effect,
-            immediate: format!("inv{id}"),
+            immediate,
+        }
+    }
+
+    fn declaration(&mut self, declaration: &Declaration) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let mut effect = String::new();
+        let scope = Rc::clone(&self.scopes[self.last_scope]);
+        self.stack.push(Rc::clone(&scope));
+        self.last_scope += 1;
+        let scope = scope.borrow();
+        let var = scope.get_var(&declaration.ident.content).unwrap();
+        let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        writeln!(effect, "{} {};", var_ty.mapped(), var.mangle).unwrap();
+        Intermediate {
+            ty,
+            decl: "".into(),
+            global: "".into(),
+            effect,
+            immediate: "".into(),
+        }
+    }
+
+    fn assignment(&mut self, assignment: &Assignment) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let mut effect = String::new();
+        let mut rhs = self.expression(&assignment.rhs);
+        effect.push_str(&rhs.effect);
+        let scope = Rc::clone(&self.scopes[self.last_scope]);
+        self.last_scope += 1;
+        self.stack.push(Rc::clone(&scope));
+        if rhs.ty != TypeInstance::Never {
+            self.assignee(&mut effect, &mut rhs.immediate, &assignment.lhs);
+        }
+        Intermediate {
+            ty,
+            decl: rhs.decl,
+            global: rhs.global,
+            effect,
+            immediate: "".into(),
+        }
+    }
+
+    fn assignee(&mut self, effect: &mut String, immediate: &mut String, assignee: &Assignee) {
+        let scope = Rc::clone(&self.stack.last().unwrap());
+        match assignee {
+            Assignee::Declaration(declaration) => {
+                let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
+                let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    panic!("Could not deduce type.");
+                };
+                writeln!(effect, "{} {} = {};", ty.mapped(), var.mangle, immediate).unwrap();
+            }
+            Assignee::Path(path) => match path {
+                Path::Simple(simple) => {
+                    let var = scope.borrow().get_var(&simple.content).unwrap();
+                    writeln!(effect, "{} = {};", var.mangle, immediate).unwrap();
+                }
+            },
+            Assignee::Tuple(args) => {
+                let len = immediate.len();
+                for (i, arg) in args.iter().enumerate() {
+                    write!(immediate, ".m{i}").unwrap();
+                    self.assignee(effect, immediate, arg);
+                    immediate.truncate(len);
+                }
+            }
+        }
+    }
+
+    fn compound_assignment(&mut self, compound: &CompoundAssignment) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let len = self.stack.len();
+        let rhs = self.expression(&compound.rhs);
+        self.stack.truncate(len);
+        let decl = rhs.decl;
+        let global = rhs.global;
+        let mut effect = rhs.effect;
+        let scope = Rc::clone(self.stack.last().unwrap());
+        match &compound.lhs {
+            Place::Path(path) => match path {
+                Path::Simple(simple) => {
+                    let var = scope.borrow().get_var(&simple.content).unwrap();
+                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                        panic!("Could not deduce type.");
+                    };
+                    match (&ty, compound.op.kind, &rhs.ty) {
+                        (
+                            TypeInstance::I32 | TypeInstance::I64,
+                            _,
+                            TypeInstance::I32 | TypeInstance::I64,
+                        ) => {
+                            writeln!(
+                                effect,
+                                "{} {} {};",
+                                var.mangle, compound.op.content, rhs.immediate
+                            )
+                            .unwrap();
+                        }
+                        _ => panic!(
+                            "Could not assign type `{}` to type `{ty}` using `{}`.",
+                            rhs.ty, compound.op.content
+                        ),
+                    }
+                }
+            },
+        }
+        Intermediate {
+            ty,
+            decl,
+            global,
+            effect,
+            immediate: "".into(),
         }
     }
 }

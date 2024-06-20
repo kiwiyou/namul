@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expr::{Block, BlockExpression, Expression, NonblockExpression},
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place},
     literal::Literal,
     path::Path,
-    stmt::{Pattern, Statement},
+    statement::{Pattern, Statement},
     Program,
 };
 
@@ -47,22 +47,17 @@ impl TypeChecker {
             Statement::Expression(expr) => {
                 self.expression(expr);
             }
-            Statement::Assignment(assignment) => {
-                let scope = Rc::clone(&self.scopes[self.last]);
-                self.last += 1;
-                self.stack.push(scope);
-                let rhs = self.expression(&assignment.rhs);
-                let mut rhs_ty = rhs.borrow_mut();
-                let pattern = self.pattern(&assignment.lhs);
-                rhs_ty.unify(&mut pattern.borrow_mut());
-            }
             Statement::Repeat(repeat) => {
+                let len = self.stack.len();
                 self.expression(&repeat.times);
                 self.block(&repeat.block);
+                self.stack.truncate(len);
             }
             Statement::While(while_) => {
+                let len = self.stack.len();
                 self.expression(&while_.condition);
                 self.block(&while_.block);
+                self.stack.truncate(len);
             }
             Statement::Function(function) => {
                 let block = Rc::clone(&self.block_stack.last().unwrap());
@@ -82,7 +77,6 @@ impl TypeChecker {
     }
 
     fn expression(&mut self, expr: &Expression) -> Rc<RefCell<TypeInference>> {
-        let scope = Rc::clone(&self.stack.last().unwrap());
         let ty = Rc::new(RefCell::new(TypeInference::Unknown));
         self.inference.push(Rc::clone(&ty));
         match expr {
@@ -93,6 +87,7 @@ impl TypeChecker {
                     block_ty.unify(&mut ty.borrow_mut());
                 }
                 BlockExpression::If(if_) => {
+                    let len = self.stack.len();
                     let condition = self.expression(&if_.condition);
                     let mut condition_ty = condition.borrow_mut();
                     condition_ty.unify(&mut TypeInference::Exact(TypeInstance::Bool));
@@ -103,9 +98,10 @@ impl TypeChecker {
                         let mut falsy_ty = falsy.borrow_mut();
                         truthy_ty.unify(&mut falsy_ty);
                     } else {
-                        truthy_ty.unify(&mut TypeInference::Exact(TypeInstance::Unit));
+                        truthy_ty.unify(&mut TypeInference::Never);
                     }
                     truthy_ty.unify(&mut ty.borrow_mut());
+                    self.stack.truncate(len);
                 }
             },
             Expression::Nonblock(nonblock) => match nonblock {
@@ -119,6 +115,7 @@ impl TypeChecker {
                 },
                 NonblockExpression::Path(path) => match path {
                     Path::Simple(simple) => {
+                        let scope = Rc::clone(&self.stack.last().unwrap());
                         let scope = scope.borrow();
                         let Some(var) = scope.get_var(&simple.content) else {
                             panic!("Could not find name {} in scope.", simple.content);
@@ -149,18 +146,25 @@ impl TypeChecker {
                     TypeInference::Exact(TypeInstance::Bool).unify(&mut ty.borrow_mut());
                 }
                 NonblockExpression::Print(_) => {
-                    TypeInference::Exact(TypeInstance::Unit).unify(&mut ty.borrow_mut());
+                    TypeInference::Never.unify(&mut ty.borrow_mut());
                 }
                 NonblockExpression::Select(select) => {
+                    let len = self.stack.len();
                     let condition = self.expression(&select.condition);
-                    let mut condition_ty = condition.borrow_mut();
-                    condition_ty.unify(&mut TypeInference::Exact(TypeInstance::Bool));
+                    let inside = self.stack.len();
+                    TypeInference::Exact(TypeInstance::Bool).unify(&mut condition.borrow_mut());
                     let truthy = self.expression(&select.truthy);
                     let mut truthy_ty = truthy.borrow_mut();
+                    self.stack.truncate(inside);
                     let falsy = self.expression(&select.falsy);
                     let mut falsy_ty = falsy.borrow_mut();
                     truthy_ty.unify(&mut falsy_ty);
-                    truthy_ty.unify(&mut ty.borrow_mut());
+                    if *condition.borrow() == TypeInference::Never {
+                        TypeInference::Never.unify(&mut condition.borrow_mut());
+                    } else {
+                        truthy_ty.unify(&mut ty.borrow_mut());
+                    }
+                    self.stack.truncate(len);
                 }
                 NonblockExpression::MakeTuple(make_tuple) => {
                     let mut args = vec![];
@@ -176,15 +180,47 @@ impl TypeChecker {
                 }
                 NonblockExpression::Invocation(invocation) => {
                     let func = self.expression(&invocation.callee);
+                    let len = self.stack.len();
                     let mut args = vec![];
                     for arg in invocation.args.iter() {
                         args.push(Rc::clone(&self.expression(arg)));
                     }
+                    self.stack.truncate(len);
                     let mut func_ty = TypeInference::Function {
                         args,
                         result: Rc::clone(&ty),
                     };
                     func_ty.unify(&mut func.borrow_mut());
+                }
+                NonblockExpression::Declaration(_) => {
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(scope);
+                    TypeInference::Never.unify(&mut ty.borrow_mut());
+                }
+                NonblockExpression::Assignment(assignment) => {
+                    let rhs = self.expression(&assignment.rhs);
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(scope);
+                    let lhs = self.assignee(&assignment.lhs);
+                    lhs.borrow_mut().unify(&mut rhs.borrow_mut());
+                    TypeInference::Never.unify(&mut ty.borrow_mut());
+                }
+                NonblockExpression::CompoundAssignment(compound) => {
+                    let len = self.stack.len();
+                    let rhs = self.expression(&compound.rhs);
+                    self.stack.truncate(len);
+                    match &compound.lhs {
+                        Place::Path(path) => match path {
+                            Path::Simple(simple) => {
+                                let scope = Rc::clone(self.stack.last().unwrap());
+                                let var = scope.borrow().get_var(&simple.content).unwrap();
+                                var.ty.borrow_mut().unify(&mut rhs.borrow_mut());
+                            }
+                        },
+                    }
+                    TypeInference::Never.unify(&mut ty.borrow_mut());
                 }
             },
         };
@@ -199,15 +235,15 @@ impl TypeChecker {
         self.block_stack.push(Rc::clone(&scope));
         let ty = Rc::new(RefCell::new(TypeInference::Unknown));
         self.inference.push(Rc::clone(&ty));
-        for stmt in block.statement.iter() {
-            self.statement(stmt);
+        for statement in block.statement.iter() {
+            self.statement(statement);
         }
         if let Some(result) = &block.result {
             let expr = self.expression(&result);
             let mut expr_ty = expr.borrow_mut();
             expr_ty.unify(&mut ty.borrow_mut());
         } else {
-            TypeInference::Exact(TypeInstance::Unit).unify(&mut ty.borrow_mut());
+            TypeInference::Never.unify(&mut ty.borrow_mut());
         };
         self.stack.truncate(begin);
         self.block_stack.pop();
@@ -229,6 +265,27 @@ impl TypeChecker {
             }
             Pattern::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(
                 args.iter().map(|arg| self.pattern(arg)).collect(),
+            ))),
+        }
+    }
+
+    fn assignee(&mut self, assignee: &Assignee) -> Rc<RefCell<TypeInference>> {
+        let scope = Rc::clone(self.stack.last().unwrap());
+        match assignee {
+            Assignee::Declaration(declaration) => {
+                scope
+                    .borrow()
+                    .get_var(&declaration.ident.content)
+                    .unwrap()
+                    .ty
+            }
+            Assignee::Path(path) => match path {
+                Path::Simple(simple) => scope.borrow().get_var(&simple.content).unwrap().ty,
+            },
+            Assignee::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(
+                args.iter()
+                    .map(|assignee| self.assignee(assignee))
+                    .collect(),
             ))),
         }
     }

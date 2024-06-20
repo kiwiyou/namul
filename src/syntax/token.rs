@@ -51,6 +51,11 @@ pub enum TokenKind {
     PunctVerticalLineVerticalLine,
     PunctQuestionMark,
     PunctColon,
+    PunctPlusSignEqualsSign,
+    PunctHyphenMinusEqualsSign,
+    PunctAsteriskEqualsSign,
+    PunctSolidusEqualsSign,
+    PunctPercentSignEqualsSign,
 }
 
 fn token<T: Into<String>>(kind: TokenKind) -> impl Fn((T, Range<usize>)) -> Token {
@@ -82,6 +87,21 @@ pub fn parse_token(s: &mut Located<&str>) -> PResult<Token> {
 
 pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
     alt([
+        literal("+=")
+            .with_span()
+            .map(token(TokenKind::PunctPlusSignEqualsSign)),
+        literal("-=")
+            .with_span()
+            .map(token(TokenKind::PunctHyphenMinusEqualsSign)),
+        literal("*=")
+            .with_span()
+            .map(token(TokenKind::PunctAsteriskEqualsSign)),
+        literal("/=")
+            .with_span()
+            .map(token(TokenKind::PunctSolidusEqualsSign)),
+        literal("%=")
+            .with_span()
+            .map(token(TokenKind::PunctPercentSignEqualsSign)),
         literal("&&")
             .with_span()
             .map(token(TokenKind::PunctAmpersandAmpersand)),
@@ -200,7 +220,7 @@ pub fn parse_keyword(s: &mut Located<&str>) -> PResult<Token> {
         literal("fn").with_span().map(token(TokenKind::KeywordFn)),
         literal("return")
             .with_span()
-            .map(token(TokenKind::KeywordFn)),
+            .map(token(TokenKind::KeywordReturn)),
         literal("true")
             .with_span()
             .map(token(TokenKind::KeywordTrue)),

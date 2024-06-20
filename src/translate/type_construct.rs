@@ -1,13 +1,14 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
-    expr::{Block, BlockExpression, Expression},
+    expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place::Path},
     item::Type,
-    stmt::{Pattern, Statement},
+    path::Path::Simple,
+    statement::{Pattern, Statement},
     Program,
 };
 
-use super::{name_resolve::NameResolver, Scope, TypeInference, TypeInstance};
+use super::{name_resolve::NameResolver, Scope, TypeInference};
 
 pub struct TypeConstructor {
     pub scopes: Vec<Rc<RefCell<Scope>>>,
@@ -53,20 +54,17 @@ impl TypeConstructor {
             Statement::Expression(expr) => {
                 self.expression(expr);
             }
-            Statement::Assignment(assignment) => {
-                let scope = Rc::clone(&self.scopes[self.last]);
-                self.last += 1;
-                self.expression(&assignment.rhs);
-                self.stack.push(scope);
-                self.pattern(&assignment.lhs);
-            }
             Statement::Repeat(repeat) => {
+                let len = self.stack.len();
                 self.expression(&repeat.times);
                 self.block(&repeat.block);
+                self.stack.truncate(len);
             }
             Statement::While(while_) => {
+                let len = self.stack.len();
                 self.expression(&while_.condition);
                 self.block(&while_.block);
+                self.stack.truncate(len);
             }
             Statement::Function(function) => {
                 let block = Rc::clone(self.block_stack.last().unwrap());
@@ -80,10 +78,12 @@ impl TypeConstructor {
                 let scope = scope.borrow();
                 TypeInference::Function {
                     args: self.construct_arg(&scope, &function.args),
-                    result: function.result.as_ref().map_or(
-                        Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Unit))),
-                        |result| self.construct_type(&scope, result),
-                    ),
+                    result: function
+                        .result
+                        .as_ref()
+                        .map_or(Rc::new(RefCell::new(TypeInference::Never)), |result| {
+                            self.construct_type(&scope, result)
+                        }),
                 }
                 .unify(&mut var.ty.borrow_mut());
                 for arg in function.args.iter() {
@@ -102,19 +102,82 @@ impl TypeConstructor {
                     self.block(block);
                 }
                 BlockExpression::If(if_) => {
+                    let len = self.stack.len();
                     self.expression(&if_.condition);
                     self.block(&if_.truthy);
                     if let Some(falsy) = &if_.falsy {
                         self.block(falsy);
                     }
+                    self.stack.truncate(len);
                 }
             },
-            Expression::Nonblock(_) => {}
+            Expression::Nonblock(nonblock) => match nonblock {
+                NonblockExpression::Parentheses(expr) => {
+                    self.expression(&expr);
+                }
+                NonblockExpression::Literal(_) => {}
+                NonblockExpression::Path(_) => {}
+                NonblockExpression::Binary(binary) => {
+                    self.expression(&binary.lhs);
+                    self.expression(&binary.rhs);
+                }
+                NonblockExpression::Comparison(comparison) => {
+                    self.expression(&comparison.first);
+                    for (_, expr) in comparison.chain.iter() {
+                        self.expression(expr);
+                    }
+                }
+                NonblockExpression::Print(_) => {}
+                NonblockExpression::Select(select) => {
+                    let len = self.stack.len();
+                    self.expression(&select.condition);
+                    let inside = self.stack.len();
+                    self.expression(&select.truthy);
+                    self.stack.truncate(inside);
+                    self.expression(&select.falsy);
+                    self.stack.truncate(len);
+                }
+                NonblockExpression::MakeTuple(make_tuple) => {
+                    for arg in make_tuple.args.iter() {
+                        self.expression(arg);
+                    }
+                }
+                NonblockExpression::Invocation(invocation) => {
+                    self.expression(&invocation.callee);
+                    let len = self.stack.len();
+                    for arg in invocation.args.iter() {
+                        self.expression(arg);
+                    }
+                    self.stack.truncate(len);
+                }
+                NonblockExpression::Declaration(declaration) => {
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(Rc::clone(&scope));
+                    let scope = scope.borrow();
+                    let ty = self.construct_type(&scope, &declaration.ty);
+                    let var = scope.get_var(&declaration.ident.content).unwrap();
+                    let mut var_ty = var.ty.borrow_mut();
+                    var_ty.unify(&mut ty.borrow_mut());
+                }
+                NonblockExpression::Assignment(assignment) => {
+                    self.expression(&assignment.rhs);
+                    let scope = Rc::clone(&self.scopes[self.last]);
+                    self.last += 1;
+                    self.stack.push(scope);
+                    self.assignee(&assignment.lhs);
+                }
+                NonblockExpression::CompoundAssignment(compound) => {
+                    let len = self.stack.len();
+                    self.expression(&compound.rhs);
+                    self.stack.truncate(len);
+                }
+            },
         };
     }
 
     fn block(&mut self, block: &Block) {
-        let begin = self.stack.len();
+        let len = self.stack.len();
         let scope = Rc::clone(&self.scopes[self.last]);
         self.last += 1;
         self.stack.push(Rc::clone(&scope));
@@ -125,7 +188,7 @@ impl TypeConstructor {
         if let Some(result) = &block.result {
             self.expression(&result);
         }
-        self.stack.truncate(begin);
+        self.stack.truncate(len);
         self.block_stack.pop();
     }
 
@@ -177,6 +240,24 @@ impl TypeConstructor {
             Pattern::Tuple(args) => {
                 for arg in args {
                     self.pattern(arg);
+                }
+            }
+        }
+    }
+
+    fn assignee(&mut self, assignee: &Assignee) {
+        let scope = Rc::clone(&self.stack.last().unwrap());
+        match assignee {
+            Assignee::Declaration(declaration) => {
+                let scope = scope.borrow();
+                let var = scope.get_var(&declaration.ident.content).unwrap();
+                let mut var_ty = var.ty.borrow_mut();
+                var_ty.unify(&mut self.construct_type(&scope, &declaration.ty).borrow_mut());
+            }
+            Assignee::Path(_) => {}
+            Assignee::Tuple(args) => {
+                for arg in args.iter() {
+                    self.assignee(arg);
                 }
             }
         }

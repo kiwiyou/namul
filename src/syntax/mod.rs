@@ -1,15 +1,15 @@
-use stmt::{parse_statement, Statement};
+use statement::{parse_statement, Statement};
 use winnow::{
     combinator::{opt, preceded, repeat, terminated},
     Located, PResult, Parser,
 };
 
-pub mod expr;
+pub mod expression;
 pub mod format;
 pub mod item;
 pub mod literal;
 pub mod path;
-pub mod stmt;
+pub mod statement;
 pub mod token;
 
 pub use token::{Token, TokenKind};

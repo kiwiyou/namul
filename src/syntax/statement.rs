@@ -3,10 +3,10 @@ use winnow::{
     seq, Located, PResult, Parser,
 };
 
-use crate::syntax::expr::parse_expression;
+use crate::syntax::expression::parse_expression;
 
 use super::{
-    expr::{parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression},
+    expression::{parse_block, parse_block_expression, parse_nonblock_expression, Block, Expression},
     item::{parse_type, Type},
     Token, TokenKind,
 };
@@ -16,7 +16,6 @@ pub enum Statement {
     Nop,
     Input(InputParser),
     Expression(Expression),
-    Assignment(Assignment),
     Repeat(Repeat),
     While(While),
     Function(Function),
@@ -35,30 +34,7 @@ pub fn parse_statement(s: &mut Located<&str>) -> PResult<Statement> {
         )
         .map(|nonblock| Statement::Expression(Expression::Nonblock(nonblock))),
         parse_block_expression.map(|block| Statement::Expression(Expression::Block(block))),
-        terminated(
-            parse_assignment,
-            (opt(TokenKind::White), TokenKind::PunctSemicolon),
-        )
-        .map(Statement::Assignment),
     ))
-    .parse_next(s)
-}
-
-#[derive(Debug, Clone)]
-pub struct Assignment {
-    pub lhs: Pattern,
-    pub rhs: Expression,
-}
-
-pub fn parse_assignment(s: &mut Located<&str>) -> PResult<Assignment> {
-    seq!(
-        parse_pattern,
-        _: opt(TokenKind::White),
-        _: TokenKind::PunctEqualsSign,
-        _: opt(TokenKind::White),
-        parse_expression,
-    )
-    .map(|(lhs, rhs)| Assignment { lhs, rhs })
     .parse_next(s)
 }
 

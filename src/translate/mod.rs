@@ -16,7 +16,6 @@ pub struct Scope {
 pub enum TypeInstance {
     I32,
     I64,
-    Unit,
     Bool,
     Tuple {
         id: usize,
@@ -26,6 +25,7 @@ pub enum TypeInstance {
         args: Vec<TypeInstance>,
         result: Box<TypeInstance>,
     },
+    Never,
 }
 
 impl TypeInstance {
@@ -33,7 +33,6 @@ impl TypeInstance {
         use TypeInstance::*;
         match self {
             I32 => out.push('0'),
-            Unit => out.push('1'),
             Bool => out.push('2'),
             Tuple { args, .. } => {
                 out.push_str("3[");
@@ -54,6 +53,7 @@ impl TypeInstance {
                 }
                 out.push(']');
             }
+            Never => out.push('6'),
         }
     }
 
@@ -75,6 +75,7 @@ pub enum TypeInference {
         args: Vec<Rc<RefCell<TypeInference>>>,
         result: Rc<RefCell<TypeInference>>,
     },
+    Never,
 }
 
 impl TypeInference {
@@ -82,6 +83,7 @@ impl TypeInference {
         use TypeInference::*;
         let unified = match (&*self, &*other) {
             (Error, _) | (_, Error) => Error,
+            (Never, _) | (_, Never) => Never,
             (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
             (Tuple(a), Tuple(b)) => {
                 if a.len() != b.len() {
@@ -146,7 +148,6 @@ impl Display for TypeInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TypeInstance::I32 => f.write_str("i32"),
-            TypeInstance::Unit => f.write_str("()"),
             TypeInstance::Bool => f.write_str("bool"),
             TypeInstance::Tuple { args, .. } => {
                 f.write_str("(")?;
@@ -170,6 +171,7 @@ impl Display for TypeInstance {
                 f.write_str(") ")?;
                 result.fmt(f)
             }
+            TypeInstance::Never => f.write_str("!"),
         }
     }
 }
@@ -178,11 +180,11 @@ impl TypeInstance {
     pub fn mapped(&self) -> String {
         match self {
             TypeInstance::I32 => "int32_t".into(),
-            TypeInstance::Unit => "void".into(),
             TypeInstance::Bool => "char".into(),
-            TypeInstance::Tuple { id, .. } => format!("T_{id}"),
+            TypeInstance::Tuple { id, .. } => format!("T{id}"),
             TypeInstance::I64 => "int64_t".into(),
             TypeInstance::Function { .. } => format!("void"),
+            TypeInstance::Never => "void".into(),
         }
     }
 }
