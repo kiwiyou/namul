@@ -57,11 +57,10 @@ d = a / c * b;
 Or you can use classic recursive function:
 ```namul
 |i32 a, i32 b|
-fn gcd(i32 a, i32 b) {
+fn gcd(i32 a, i32 b) i32 {
     b == 0 ? a : gcd(b, a % b)
 }
 i32 c = gcd(a, b);
 i32 d = a / c * b;
 `$c\n$d`;
 ```
-Function return types are inferred.

@@ -181,6 +181,7 @@ pub fn parse_while(s: &mut Located<&str>) -> PResult<While> {
 pub struct Function {
     pub ident: Token,
     pub args: Vec<Pattern>,
+    pub result: Option<Type>,
     pub block: Block,
 }
 
@@ -200,12 +201,19 @@ pub fn parse_function(s: &mut Located<&str>) -> PResult<Function> {
         _: opt(TokenKind::White),
         parse_pattern,
         _: opt(TokenKind::White),
+        opt(parse_type),
+        _: opt(TokenKind::White),
         parse_block,
     )
-    .verify(|(_, args, _)| is_pattern_typed(args))
-    .verify_map(|(ident, args, block)| {
+    .verify(|(_, args, _, _)| is_pattern_typed(args))
+    .verify_map(|(ident, args, result, block)| {
         if let Pattern::Tuple(args) = args {
-            Some(Function { ident, args, block })
+            Some(Function {
+                ident,
+                args,
+                result,
+                block,
+            })
         } else {
             None
         }

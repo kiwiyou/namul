@@ -85,12 +85,25 @@ impl TypeChecker {
                 };
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
-                self.stack.push(scope);
+                self.stack.push(Rc::clone(&scope));
                 let mut args = vec![];
                 for arg in function.args.iter() {
                     args.push(self.pattern(arg));
                 }
                 let result = self.block(&function.block);
+                {
+                    let mut result_ty = result.borrow_mut();
+                    let scope = scope.borrow();
+                    TypeInference::Exact(
+                        function
+                            .result
+                            .as_ref()
+                            .map_or(TypeInstance::Unit, |result| {
+                                self.construct_type(&scope, result)
+                            }),
+                    )
+                    .unify(&mut result_ty);
+                }
                 TypeInference::Function { args, result }.unify(&mut var.ty.borrow_mut());
                 self.stack.pop();
             }
