@@ -2,7 +2,6 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
     expression::{Assignee, Block, BlockExpression, Expression, Index, NonblockExpression, Place},
-    path::Path,
     statement::{Pattern, Statement},
     Program,
 };

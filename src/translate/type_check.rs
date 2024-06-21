@@ -192,6 +192,7 @@ impl TypeChecker {
                     TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Tuple(args))));
                 }
                 NonblockExpression::Parentheses(expr) => {
+                    self.inference.pop();
                     let expr = self.expression(&expr);
                     TypeInference::unify(&ty, &expr);
                 }
@@ -264,13 +265,13 @@ impl TypeChecker {
                 NonblockExpression::Index(index) => {
                     let len = self.stack.len();
                     let target = self.expression(&index.target);
-                    let index = self.expression(&index.index);
+                    let idx = self.expression(&index.index);
                     self.stack.truncate(len);
                     let target_ty = target.borrow();
                     match &*target_ty {
                         TypeInference::Array { element, .. } => {
                             TypeInference::unify(
-                                &index,
+                                &idx,
                                 &Rc::new(RefCell::new(TypeInference::Integer)),
                             );
                             TypeInference::unify(&ty, &element);
@@ -296,12 +297,12 @@ impl TypeChecker {
         for statement in block.statement.iter() {
             self.statement(statement);
         }
-        if let Some(result) = &block.result {
-            let expr = self.expression(&result);
-            TypeInference::unify(&ty, &expr);
+        let expr = if let Some(result) = &block.result {
+            self.expression(result)
         } else {
-            TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Never)));
+            Rc::new(RefCell::new(TypeInference::Never))
         };
+        TypeInference::unify(&ty, &expr);
         self.stack.truncate(begin);
         self.block_stack.pop();
         ty

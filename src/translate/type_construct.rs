@@ -67,10 +67,7 @@ impl TypeConstructor {
             }
             Statement::Function(function) => {
                 let block = Rc::clone(self.block_stack.last().unwrap());
-                let var = {
-                    let block = block.borrow_mut();
-                    block.get_var(&function.ident.content).unwrap()
-                };
+                let var = block.borrow_mut().get_var(&function.ident.content).unwrap();
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
                 self.stack.push(Rc::clone(&scope));
@@ -244,7 +241,7 @@ impl TypeConstructor {
     }
 
     fn construct_type(&mut self, scope: &Scope, ty: &Type) -> Rc<RefCell<TypeInference>> {
-        match ty {
+        let ans = match ty {
             Type::Path(path) => {
                 let Some(ty) = scope.get_ty(&path.ident.content) else {
                     panic!("Could not find type `{}` in scope.", path.ident.content);
@@ -260,7 +257,8 @@ impl TypeConstructor {
                 element: self.construct_type(scope, &array.element),
                 len: array.len,
             })),
-        }
+        };
+        ans
     }
 
     fn pattern(&mut self, pattern: &Pattern) {

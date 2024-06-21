@@ -40,18 +40,8 @@ pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpre
         parse_assignment.map(NonblockExpression::Assignment),
         parse_compound_assignment.map(NonblockExpression::CompoundAssignment),
         parse_declaration.map(NonblockExpression::Declaration),
-        parse_invocation.map(NonblockExpression::Invocation),
-        parse_select.map(NonblockExpression::Select),
-        parse_logical.map(NonblockExpression::Binary),
-        parse_comparison.map(NonblockExpression::Comparison),
-        parse_add_sub.map(NonblockExpression::Binary),
-        parse_mul_div_mod.map(NonblockExpression::Binary),
         parse_print.map(NonblockExpression::Print),
-        parse_index.map(NonblockExpression::Index),
-        parse_literal.map(NonblockExpression::Literal),
-        parse_path.map(NonblockExpression::Path),
-        parse_parentheses,
-        parse_make_tuple.map(NonblockExpression::MakeTuple),
+        parse_select,
     ))
     .parse_next(s)
 }
@@ -93,9 +83,22 @@ pub fn parse_block(s: &mut Located<&str>) -> PResult<Block> {
         _: opt(TokenKind::White),
         _: TokenKind::PunctRightCurlyBracket,
     )
-    .map(|(statement, expression)| Block {
-        statement,
-        result: expression.map(Expression::Nonblock).map(Box::new),
+    .map(|(mut statement, expression): (Vec<_>, _)| {
+        let result = if let Some(expression) = expression {
+            Some(Box::new(Expression::Nonblock(expression)))
+        } else {
+            match statement.pop() {
+                Some(Statement::Expression(Expression::Block(block))) => {
+                    Some(Box::new(Expression::Block(block)))
+                }
+                Some(popped @ _) => {
+                    statement.push(popped);
+                    None
+                }
+                None => None,
+            }
+        };
+        Block { statement, result }
     })
     .parse_next(s)
 }
@@ -107,160 +110,126 @@ pub struct BinaryOperation {
     pub rhs: Box<Expression>,
 }
 
-pub fn parse_logical(s: &mut Located<&str>) -> PResult<BinaryOperation> {
-    let operand = || {
-        alt((
-            parse_comparison
-                .map(NonblockExpression::Comparison)
-                .map(Expression::Nonblock),
-            parse_add_sub
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_mul_div_mod
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        ))
-    };
-    let first = seq!(
-        operand(),
+pub fn parse_logical(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_comparison.parse_next(s)?;
+    let Ok((op, rhs)) = seq!(
         _: opt(TokenKind::White),
         alt((TokenKind::PunctAmpersandAmpersand, TokenKind::PunctVerticalLineVerticalLine)),
         _: opt(TokenKind::White),
-        operand(),
+        parse_comparison,
     )
-    .map(|(lhs, op, rhs)| BinaryOperation {
-        lhs: Box::new(lhs),
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    let binary = NonblockExpression::Binary(BinaryOperation {
+        lhs: Box::new(Expression::Nonblock(first)),
         operator: op,
-        rhs: Box::new(rhs),
-    })
-    .parse_next(s)?;
+        rhs: Box::new(Expression::Nonblock(rhs)),
+    });
     repeat(
         0..,
         seq!(
             _: opt(TokenKind::White),
-        alt((TokenKind::PunctAmpersandAmpersand, TokenKind::PunctVerticalLineVerticalLine)),
-        _: opt(TokenKind::White),
-            operand(),
+            alt((TokenKind::PunctAmpersandAmpersand, TokenKind::PunctVerticalLineVerticalLine)),
+            _: opt(TokenKind::White),
+            parse_comparison,
         ),
     )
     .fold(
-        move || first.clone(),
-        |prev, (op, next)| BinaryOperation {
-            lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
-            operator: op,
-            rhs: Box::new(next),
+        move || binary.clone(),
+        |prev, (op, next)| {
+            NonblockExpression::Binary(BinaryOperation {
+                lhs: Box::new(Expression::Nonblock(prev)),
+                operator: op,
+                rhs: Box::new(Expression::Nonblock(next)),
+            })
         },
     )
     .parse_next(s)
 }
 
-pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<BinaryOperation> {
-    let operand = || {
-        alt((
-            parse_mul_div_mod
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        ))
-    };
-    let first = seq!(
-        operand(),
+pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_mul_div_mod.parse_next(s)?;
+    let Ok((op, rhs)) = seq!(
         _: opt(TokenKind::White),
         alt((TokenKind::PunctPlusSign, TokenKind::PunctHyphenMinus)),
         _: opt(TokenKind::White),
-        operand(),
+        parse_mul_div_mod,
     )
-    .map(|(lhs, op, rhs)| BinaryOperation {
-        lhs: Box::new(lhs),
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    let binary = BinaryOperation {
+        lhs: Box::new(Expression::Nonblock(first)),
         operator: op,
-        rhs: Box::new(rhs),
-    })
-    .parse_next(s)?;
+        rhs: Box::new(Expression::Nonblock(rhs)),
+    };
     repeat(
         0..,
         seq!(
             _: opt(TokenKind::White),
             alt((TokenKind::PunctPlusSign, TokenKind::PunctHyphenMinus)),
             _: opt(TokenKind::White),
-            operand(),
+            parse_mul_div_mod,
         ),
     )
     .fold(
-        move || first.clone(),
+        move || binary.clone(),
         |prev, (op, next)| BinaryOperation {
             lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
             operator: op,
-            rhs: Box::new(next),
+            rhs: Box::new(Expression::Nonblock(next)),
         },
     )
+    .map(|binary| NonblockExpression::Binary(binary))
     .parse_next(s)
 }
 
-pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<BinaryOperation> {
-    let operand = || {
-        alt((
-            parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        ))
-    };
-    let first = seq!(
-        operand(),
+pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_index.parse_next(s)?;
+
+    let Ok((op, rhs)) = seq!(
         _: opt(TokenKind::White),
         alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
         _: opt(TokenKind::White),
-        operand(),
+        parse_index,
     )
-    .map(|(lhs, op, rhs)| BinaryOperation {
-        lhs: Box::new(lhs),
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    let binary = BinaryOperation {
+        lhs: Box::new(Expression::Nonblock(first)),
         operator: op,
-        rhs: Box::new(rhs),
-    })
-    .parse_next(s)?;
+        rhs: Box::new(Expression::Nonblock(rhs)),
+    };
     repeat(
         0..,
         seq!(
             _: opt(TokenKind::White),
             alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
             _: opt(TokenKind::White),
-            operand(),
+            parse_index
         ),
     )
     .fold(
-        move || first.clone(),
+        move || binary.clone(),
         |prev, (op, next)| BinaryOperation {
             lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
             operator: op,
-            rhs: Box::new(next),
+            rhs: Box::new(Expression::Nonblock(next)),
         },
     )
+    .map(|binary| NonblockExpression::Binary(binary))
     .parse_next(s)
 }
 
-pub fn parse_term(s: &mut Located<&str>) -> PResult<Expression> {
+pub fn parse_term(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
-        parse_block_expression.map(Expression::Block),
-        parse_invocation
-            .map(NonblockExpression::Invocation)
-            .map(Expression::Nonblock),
-        parse_parentheses.map(Expression::Nonblock),
-        parse_make_tuple
-            .map(NonblockExpression::MakeTuple)
-            .map(Expression::Nonblock),
-        parse_literal
-            .map(NonblockExpression::Literal)
-            .map(Expression::Nonblock),
-        parse_path
-            .map(NonblockExpression::Path)
-            .map(Expression::Nonblock),
+        parse_parentheses,
+        parse_make_tuple.map(NonblockExpression::MakeTuple),
+        parse_invocation.map(NonblockExpression::Invocation),
+        parse_literal.map(NonblockExpression::Literal),
+        parse_path.map(NonblockExpression::Path),
     ))
     .parse_next(s)
 }
@@ -297,45 +266,31 @@ pub struct Comparison {
     pub chain: Vec<(Token, Expression)>,
 }
 
-pub fn parse_comparison(s: &mut Located<&str>) -> PResult<Comparison> {
-    let operand = || {
-        alt((
-            parse_add_sub
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_mul_div_mod
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        ))
-    };
-    (
-        operand(),
-        repeat(
-            1..,
-            seq!(
-                _: opt(TokenKind::White),
-                alt((
-                    TokenKind::PunctLessThanSign,
-                    TokenKind::PunctGreaterThanSign,
-                    TokenKind::PunctEqualsSignEqualsSign,
-                    TokenKind::PunctExclamationMarkEqualsSign,
-                    TokenKind::PunctLessThanSignEqualsSign,
-                    TokenKind::PunctGreaterThanSignEqualsSign,
-                )),
-                _: opt(TokenKind::White),
-                operand()
-            ),
+pub fn parse_comparison(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_add_sub.parse_next(s)?;
+    let Ok(chain) = repeat(
+        1..,
+        seq!(
+            _: opt(TokenKind::White),
+            alt((
+                TokenKind::PunctLessThanSign,
+                TokenKind::PunctGreaterThanSign,
+                TokenKind::PunctEqualsSignEqualsSign,
+                TokenKind::PunctExclamationMarkEqualsSign,
+                TokenKind::PunctLessThanSignEqualsSign,
+                TokenKind::PunctGreaterThanSignEqualsSign,
+            )),
+            _: opt(TokenKind::White),
+            parse_add_sub.map(Expression::Nonblock),
         ),
     )
-        .map(|(first, chain)| Comparison {
-            first: Box::new(first),
-            chain,
-        })
-        .parse_next(s)
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    Ok(NonblockExpression::Comparison(Comparison {
+        first: Box::new(Expression::Nonblock(first)),
+        chain,
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -345,64 +300,26 @@ pub struct Select {
     pub falsy: Box<Expression>,
 }
 
-pub fn parse_select(s: &mut Located<&str>) -> PResult<Select> {
-    let operand = || {
-        alt((
-            parse_select
-                .map(NonblockExpression::Select)
-                .map(Expression::Nonblock),
-            parse_logical
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_comparison
-                .map(NonblockExpression::Comparison)
-                .map(Expression::Nonblock),
-            parse_add_sub
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_mul_div_mod
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        ))
-    };
-    seq!(
-        alt((
-            parse_logical
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_comparison
-                .map(NonblockExpression::Comparison)
-                .map(Expression::Nonblock),
-            parse_add_sub
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-            parse_mul_div_mod
-                .map(NonblockExpression::Binary)
-                .map(Expression::Nonblock),
-                parse_index
-                .map(NonblockExpression::Index)
-                .map(Expression::Nonblock),
-            parse_term,
-        )),
+pub fn parse_select(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_logical.parse_next(s)?;
+    let Ok((truthy, falsy)) = seq!(
         _: opt(TokenKind::White),
         _: TokenKind::PunctQuestionMark,
         _: opt(TokenKind::White),
-        operand(),
+        parse_select,
         _: opt(TokenKind::White),
         _: TokenKind::PunctColon,
         _: opt(TokenKind::White),
-        operand(),
+        parse_select,
     )
-    .map(|(condition, truthy, falsy)| Select {
-        condition: Box::new(condition),
-        truthy: Box::new(truthy),
-        falsy: Box::new(falsy),
-    })
-    .parse_next(s)
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    Ok(NonblockExpression::Select(Select {
+        condition: Box::new(Expression::Nonblock(first)),
+        truthy: Box::new(Expression::Nonblock(truthy)),
+        falsy: Box::new(Expression::Nonblock(falsy)),
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -517,14 +434,14 @@ pub fn parse_assignment(s: &mut Located<&str>) -> PResult<Assignment> {
 pub fn parse_assignee(s: &mut Located<&str>) -> PResult<Assignee> {
     alt((
         parse_declaration.map(Assignee::Declaration),
-        parse_index.map(Assignee::Index),
+        parse_assignee_tuple.map(Assignee::Tuple),
+        parse_index_only.map(Assignee::Index),
         parse_path.map(Assignee::Path),
         delimited(
             TokenKind::PunctLeftParenthesis,
             preceded(opt(TokenKind::White), parse_assignee),
             (opt(TokenKind::White), TokenKind::PunctRightParenthesis),
         ),
-        parse_assignee_tuple.map(Assignee::Tuple),
     ))
     .parse_next(s)
 }
@@ -567,7 +484,11 @@ pub struct CompoundAssignment {
 }
 
 pub fn parse_place(s: &mut Located<&str>) -> PResult<Place> {
-    alt((parse_index.map(Place::Index), parse_path.map(Place::Path))).parse_next(s)
+    alt((
+        parse_index_only.map(Place::Index),
+        parse_path.map(Place::Path),
+    ))
+    .parse_next(s)
 }
 
 pub fn parse_compound_assignment(s: &mut Located<&str>) -> PResult<CompoundAssignment> {
@@ -626,9 +547,26 @@ pub struct Index {
     pub index: Box<Expression>,
 }
 
-pub fn parse_index(s: &mut Located<&str>) -> PResult<Index> {
-    let index = (
-        parse_term,
+pub fn parse_index(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let term = parse_term.parse_next(s)?;
+    let Ok(other) = delimited(
+        (
+            opt(TokenKind::White),
+            TokenKind::PunctLeftSquareBracket,
+            opt(TokenKind::White),
+        ),
+        parse_expression,
+        (opt(TokenKind::White), TokenKind::PunctRightSquareBracket),
+    )
+    .parse_next(s) else {
+        return Ok(term);
+    };
+    let index = Index {
+        target: Box::new(Expression::Nonblock(term)),
+        index: Box::new(other),
+    };
+    repeat(
+        0..,
         delimited(
             (
                 opt(TokenKind::White),
@@ -639,11 +577,33 @@ pub fn parse_index(s: &mut Located<&str>) -> PResult<Index> {
             (opt(TokenKind::White), TokenKind::PunctRightSquareBracket),
         ),
     )
-        .map(|(target, index)| Index {
-            target: Box::new(target),
+    .fold(
+        move || index.clone(),
+        |prev, index| Index {
+            target: Box::new(Expression::Nonblock(NonblockExpression::Index(prev))),
             index: Box::new(index),
-        })
-        .parse_next(s)?;
+        },
+    )
+    .map(NonblockExpression::Index)
+    .parse_next(s)
+}
+
+pub fn parse_index_only(s: &mut Located<&str>) -> PResult<Index> {
+    let term = parse_term.parse_next(s)?;
+    let other = delimited(
+        (
+            opt(TokenKind::White),
+            TokenKind::PunctLeftSquareBracket,
+            opt(TokenKind::White),
+        ),
+        parse_expression,
+        (opt(TokenKind::White), TokenKind::PunctRightSquareBracket),
+    )
+    .parse_next(s)?;
+    let index = Index {
+        target: Box::new(Expression::Nonblock(term)),
+        index: Box::new(other),
+    };
     repeat(
         0..,
         delimited(
