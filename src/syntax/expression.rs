@@ -308,19 +308,19 @@ pub fn parse_select(s: &mut Located<&str>) -> PResult<NonblockExpression> {
         _: opt(TokenKind::White),
         _: TokenKind::PunctQuestionMark,
         _: opt(TokenKind::White),
-        parse_select,
+        parse_expression,
         _: opt(TokenKind::White),
         _: TokenKind::PunctColon,
         _: opt(TokenKind::White),
-        parse_select,
+        parse_expression,
     )
     .parse_next(s) else {
         return Ok(first);
     };
     Ok(NonblockExpression::Select(Select {
         condition: Box::new(Expression::Nonblock(first)),
-        truthy: Box::new(Expression::Nonblock(truthy)),
-        falsy: Box::new(Expression::Nonblock(falsy)),
+        truthy: Box::new(truthy),
+        falsy: Box::new(falsy),
     }))
 }
 
