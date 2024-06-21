@@ -796,6 +796,8 @@ impl Codegen {
 
         let mut out = String::new();
         writeln!(out, "// namul 0.0.0").unwrap();
+        writeln!(out, "#pragma GCC diagnostics ignored \"-Wmain\"").unwrap();
+        writeln!(out, "#pragma GCC diagnostics ignored \"-Wunused-variable\"").unwrap();
         writeln!(out, "#include <stdint.h>").unwrap();
         writeln!(out, "#include <unistd.h>").unwrap();
         out.push_str(include_str!("fragments/builtins.c"));
