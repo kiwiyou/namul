@@ -358,6 +358,19 @@ impl TypeChecker {
                     .map(|assignee| self.assignee(assignee))
                     .collect(),
             ))),
+            Assignee::Array(args) => {
+                let element = args.iter().fold(
+                    Rc::new(RefCell::new(TypeInference::Unknown)),
+                    |prev, arg| {
+                        TypeInference::unify(&prev, &self.assignee(arg));
+                        prev
+                    },
+                );
+                Rc::new(RefCell::new(TypeInference::Array {
+                    element,
+                    len: args.len(),
+                }))
+            }
             Assignee::Index(index) => {
                 let len = self.stack.len();
                 let target = self.expression(&index.target);

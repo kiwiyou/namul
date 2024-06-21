@@ -1068,6 +1068,14 @@ impl Codegen {
                     immediate.truncate(len);
                 }
             }
+            Assignee::Array(args) => {
+                let len = immediate.len();
+                for (i, arg) in args.iter().enumerate() {
+                    write!(immediate, ".v[{i}]").unwrap();
+                    self.assignee(decl, funcs, effect, immediate, arg);
+                    immediate.truncate(len);
+                }
+            }
             Assignee::Index(index) => {
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
@@ -1135,7 +1143,7 @@ impl Codegen {
                     self.assign_var(effect, &ty, &var.mangle, &getter);
                 }
             },
-            Assignee::Tuple(args) => {
+            Assignee::Tuple(args) | Assignee::Array(args) => {
                 for arg in args.iter() {
                     self.assignee_input(decl, funcs, effect, arg);
                 }

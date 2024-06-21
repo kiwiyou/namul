@@ -301,7 +301,7 @@ impl TypeConstructor {
                     }
                 }
             },
-            Assignee::Tuple(args) => {
+            Assignee::Tuple(args) | Assignee::Array(args) => {
                 for arg in args.iter() {
                     self.assignee(arg);
                 }

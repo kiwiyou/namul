@@ -401,6 +401,7 @@ pub enum Assignee {
     Declaration(Declaration),
     Path(Path),
     Tuple(Vec<Assignee>),
+    Array(Vec<Assignee>),
     Index(Index),
 }
 
@@ -437,6 +438,7 @@ pub fn parse_assignee(s: &mut Located<&str>) -> PResult<Assignee> {
     alt((
         parse_declaration.map(Assignee::Declaration),
         parse_assignee_tuple.map(Assignee::Tuple),
+        parse_assignee_array.map(Assignee::Array),
         parse_index_only.map(Assignee::Index),
         parse_path.map(Assignee::Path),
         delimited(
@@ -467,6 +469,24 @@ pub fn parse_assignee_tuple(s: &mut Located<&str>) -> PResult<Vec<Assignee>> {
             opt(TokenKind::PunctComma),
             opt(TokenKind::White),
             TokenKind::PunctRightParenthesis,
+        ),
+    )
+    .parse_next(s)
+}
+
+pub fn parse_assignee_array(s: &mut Located<&str>) -> PResult<Vec<Assignee>> {
+    delimited(
+        TokenKind::PunctLeftSquareBracket,
+        separated(
+            0..,
+            preceded(opt(TokenKind::White), parse_assignee),
+            (opt(TokenKind::White), TokenKind::PunctComma),
+        ),
+        (
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
+            opt(TokenKind::White),
+            TokenKind::PunctRightSquareBracket,
         ),
     )
     .parse_next(s)

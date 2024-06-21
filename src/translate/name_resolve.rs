@@ -254,7 +254,7 @@ impl NameResolver {
                 );
             }
             Assignee::Path(_) => {}
-            Assignee::Tuple(args) => {
+            Assignee::Tuple(args) | Assignee::Array(args) => {
                 for arg in args.iter() {
                     self.assignee(Rc::clone(&scope), arg);
                 }
