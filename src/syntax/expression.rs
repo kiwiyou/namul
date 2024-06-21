@@ -28,6 +28,7 @@ pub enum NonblockExpression {
     Print(Print),
     Select(Select),
     MakeTuple(MakeTuple),
+    MakeArray(MakeArray),
     Invocation(Invocation),
     Assignment(Assignment),
     Declaration(Declaration),
@@ -227,6 +228,7 @@ pub fn parse_term(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
         parse_parentheses,
         parse_make_tuple.map(NonblockExpression::MakeTuple),
+        parse_make_array.map(NonblockExpression::MakeArray),
         parse_invocation.map(NonblockExpression::Invocation),
         parse_literal.map(NonblockExpression::Literal),
         parse_path.map(NonblockExpression::Path),
@@ -623,5 +625,29 @@ pub fn parse_index_only(s: &mut Located<&str>) -> PResult<Index> {
             index: Box::new(index),
         },
     )
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct MakeArray {
+    pub args: Vec<Expression>,
+}
+
+pub fn parse_make_array(s: &mut Located<&str>) -> PResult<MakeArray> {
+    delimited(
+        TokenKind::PunctLeftSquareBracket,
+        separated(
+            0..,
+            preceded(opt(TokenKind::White), parse_expression),
+            (opt(TokenKind::White), TokenKind::PunctComma),
+        ),
+        (
+            opt(TokenKind::White),
+            opt(TokenKind::PunctComma),
+            opt(TokenKind::White),
+            TokenKind::PunctRightSquareBracket,
+        ),
+    )
+    .map(|args| MakeArray { args })
     .parse_next(s)
 }

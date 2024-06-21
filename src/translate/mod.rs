@@ -27,6 +27,7 @@ pub enum TypeInstance {
     },
     Never,
     Array {
+        id: usize,
         element: Box<TypeInstance>,
         len: usize,
     },
@@ -59,7 +60,7 @@ impl TypeInstance {
                 out.push(']');
             }
             Never => out.push('6'),
-            Array { element, len } => {
+            Array { element, len, .. } => {
                 element.remove_id(out);
                 writeln!(out, "${len}").unwrap();
             }
@@ -203,7 +204,7 @@ impl Display for TypeInstance {
                 result.fmt(f)
             }
             TypeInstance::Never => f.write_str("!"),
-            TypeInstance::Array { element, len } => {
+            TypeInstance::Array { element, len, .. } => {
                 f.write_str("[")?;
                 element.fmt(f)?;
                 f.write_str("; ")?;
@@ -223,20 +224,12 @@ impl TypeInstance {
             TypeInstance::I64 => "int64_t".into(),
             TypeInstance::Function { .. } => format!("void"),
             TypeInstance::Never => "void".into(),
-            TypeInstance::Array { element, len } => format!("{}[{len}]", element.mapped()),
+            TypeInstance::Array { id, .. } => format!("T{id}"),
         }
     }
 
     pub fn declare(&self, name: &str) -> String {
-        match self {
-            TypeInstance::I32 => format!("int32_t {name}"),
-            TypeInstance::Bool => format!("char {name}"),
-            TypeInstance::Tuple { id, .. } => format!("T{id} {name}"),
-            TypeInstance::I64 => format!("int64_t {name}"),
-            TypeInstance::Function { .. } => format!("void {name}"),
-            TypeInstance::Never => format!("void {name}"),
-            TypeInstance::Array { element, len } => element.declare(&format!("{name}[{len}]")),
-        }
+        format!("{} {name}", self.mapped())
     }
 }
 

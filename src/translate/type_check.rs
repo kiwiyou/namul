@@ -191,6 +191,19 @@ impl TypeChecker {
                     }
                     TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Tuple(args))));
                 }
+                NonblockExpression::MakeArray(make_array) => {
+                    let element = Rc::new(RefCell::new(TypeInference::Unknown));
+                    for arg in make_array.args.iter() {
+                        TypeInference::unify(&element, &self.expression(&arg));
+                    }
+                    TypeInference::unify(
+                        &ty,
+                        &Rc::new(RefCell::new(TypeInference::Array {
+                            element,
+                            len: make_array.args.len(),
+                        })),
+                    );
+                }
                 NonblockExpression::Parentheses(expr) => {
                     self.inference.pop();
                     let expr = self.expression(&expr);

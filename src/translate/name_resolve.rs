@@ -152,6 +152,13 @@ impl NameResolver {
                     }
                     scope
                 }
+                NonblockExpression::MakeArray(make_array) => {
+                    let mut scope = Rc::clone(&parent);
+                    for arg in make_array.args.iter() {
+                        scope = self.expression(scope, arg);
+                    }
+                    scope
+                }
                 NonblockExpression::Parentheses(expr) => self.expression(Rc::clone(&parent), &expr),
                 NonblockExpression::Invocation(invocation) => {
                     let mut scope = parent;

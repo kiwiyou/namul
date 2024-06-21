@@ -151,6 +151,11 @@ impl TypeConstructor {
                         self.expression(arg);
                     }
                 }
+                NonblockExpression::MakeArray(make_array) => {
+                    for arg in make_array.args.iter() {
+                        self.expression(arg);
+                    }
+                }
                 NonblockExpression::Invocation(invocation) => {
                     self.expression(&invocation.callee);
                     let len = self.stack.len();

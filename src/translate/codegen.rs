@@ -8,7 +8,7 @@ use std::{
 use crate::syntax::{
     expression::{
         Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
-        CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeTuple,
+        CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeArray, MakeTuple,
         NonblockExpression, Place, Print, Select,
     },
     format::FormatFragment,
@@ -27,7 +27,7 @@ pub struct Codegen {
     feature: HashSet<&'static str>,
     scopes: Vec<Rc<RefCell<Scope>>>,
     inference: Vec<Rc<RefCell<TypeInference>>>,
-    tuples: HashMap<String, usize>,
+    type_id: HashMap<String, usize>,
     decl: String,
     structs: String,
     stack: Vec<Rc<RefCell<Scope>>>,
@@ -63,25 +63,24 @@ impl Codegen {
                     }
                     args.push(ty);
                 }
-                let instance = TypeInstance::Tuple {
+                let mut instance = TypeInstance::Tuple {
                     id: 0,
                     args: args.clone(),
                 };
-                let len = self.tuples.len();
-                let id = *self.tuples.entry(instance.id_removed()).or_insert(len);
-                let tuple = TypeInstance::Tuple {
-                    id,
-                    args: args.clone(),
-                };
-                if self.tuples.len() > len {
-                    writeln!(self.decl, "typedef struct {0} {0};", tuple.mapped()).unwrap();
-                    writeln!(self.structs, "struct {} {{", tuple.mapped()).unwrap();
+                let last_id = self.type_id.len();
+                let new = *self.type_id.entry(instance.id_removed()).or_insert(last_id);
+                if let TypeInstance::Tuple { id, .. } = &mut instance {
+                    *id = new;
+                }
+                if self.type_id.len() > last_id {
+                    writeln!(self.decl, "typedef struct {0} {0};", instance.mapped()).unwrap();
+                    writeln!(self.structs, "struct {} {{", instance.mapped()).unwrap();
                     for (i, arg) in args.iter().enumerate() {
                         writeln!(self.structs, "{};", arg.declare(&format!("m{i}"))).unwrap();
                     }
                     writeln!(self.structs, "}};").unwrap();
                 }
-                Some(tuple)
+                Some(instance)
             }
             TypeInference::Function { args, result } => {
                 let mut param = vec![];
@@ -94,10 +93,26 @@ impl Codegen {
                     result: Box::new(result),
                 })
             }
-            TypeInference::Array { element, len } => Some(TypeInstance::Array {
-                element: Box::new(self.synthesize(&element.borrow())?),
-                len: *len,
-            }),
+            TypeInference::Array { element, len } => {
+                let element = self.synthesize(&element.borrow())?;
+                let mut instance = TypeInstance::Array {
+                    id: 0,
+                    element: Box::new(element.clone()),
+                    len: *len,
+                };
+                let last_id = self.type_id.len();
+                let new = *self.type_id.entry(instance.id_removed()).or_insert(last_id);
+                if let TypeInstance::Array { id, .. } = &mut instance {
+                    *id = new;
+                }
+                if self.type_id.len() > last_id {
+                    writeln!(self.decl, "typedef struct {0} {0};", instance.mapped()).unwrap();
+                    writeln!(self.structs, "struct {} {{", instance.mapped()).unwrap();
+                    writeln!(self.structs, "{} v[{len}];", element.mapped()).unwrap();
+                    writeln!(self.structs, "}};").unwrap();
+                }
+                Some(instance)
+            }
         }
     }
 
@@ -522,17 +537,14 @@ impl Codegen {
 
     pub fn make_tuple(&mut self, make_tuple: &MakeTuple) -> Intermediate {
         let current_infer = Rc::clone(&self.inference[self.last_infer]);
-        let tuple_count = self.tuples.len();
         let Some(ty) = self.synthesize(&current_infer.borrow()) else {
             panic!("Could not deduce type.");
         };
-        let is_new = self.tuples.len() > tuple_count;
         self.last_infer += 1;
         let mut decl = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let ty_mapped = ty.mapped();
-        if is_new {}
         let mut construct = String::new();
         let mt_id = self.var_id;
         self.var_id += 1;
@@ -549,6 +561,44 @@ impl Codegen {
         let immediate = if ty != TypeInstance::Never {
             effect.push_str(&construct);
             format!("mt{mt_id}")
+        } else {
+            "".into()
+        };
+        Intermediate {
+            ty,
+            decl,
+            funcs,
+            effect,
+            immediate,
+        }
+    }
+
+    pub fn make_array(&mut self, make_array: &MakeArray) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let mut decl = String::new();
+        let mut funcs = String::new();
+        let mut effect = String::new();
+        let ty_mapped = ty.mapped();
+        let mut construct = String::new();
+        let mt_id = self.var_id;
+        self.var_id += 1;
+        write!(construct, "{ty_mapped} ma{mt_id} = {{{{").unwrap();
+        for arg in make_array.args.iter() {
+            let arg = self.expression(arg);
+            decl.push_str(&arg.decl);
+            funcs.push_str(&arg.funcs);
+            effect.push_str(&arg.effect);
+            construct.push_str(&arg.immediate);
+            construct.push_str(", ");
+        }
+        writeln!(construct, "}}}};").unwrap();
+        let immediate = if ty != TypeInstance::Never {
+            effect.push_str(&construct);
+            format!("ma{mt_id}")
         } else {
             "".into()
         };
@@ -756,6 +806,7 @@ impl Codegen {
                 NonblockExpression::Print(format) => self.print(format),
                 NonblockExpression::Select(select) => self.select(select),
                 NonblockExpression::MakeTuple(make_tuple) => self.make_tuple(make_tuple),
+                NonblockExpression::MakeArray(make_array) => self.make_array(make_array),
                 NonblockExpression::Parentheses(expr) => self.expression(expr),
                 NonblockExpression::Invocation(invocation) => self.invocation(invocation),
                 NonblockExpression::Declaration(declaration) => self.declaration(declaration),
@@ -779,7 +830,7 @@ impl Codegen {
             feature: Default::default(),
             scopes: type_checker.scopes,
             inference: type_checker.inference,
-            tuples: Default::default(),
+            type_id: Default::default(),
             last_scope: 1,
             last_infer: 0,
             var_id: 0,
@@ -796,8 +847,8 @@ impl Codegen {
 
         let mut out = String::new();
         writeln!(out, "// namul 0.0.0").unwrap();
-        writeln!(out, "#pragma GCC diagnostics ignored \"-Wmain\"").unwrap();
-        writeln!(out, "#pragma GCC diagnostics ignored \"-Wunused-variable\"").unwrap();
+        writeln!(out, "#pragma GCC diagnostic ignored \"-Wmain\"").unwrap();
+        writeln!(out, "#pragma GCC diagnostic ignored \"-Wunused-variable\"").unwrap();
         writeln!(out, "#include <stdint.h>").unwrap();
         writeln!(out, "#include <unistd.h>").unwrap();
         out.push_str(include_str!("fragments/builtins.c"));
@@ -1034,7 +1085,7 @@ impl Codegen {
                 self.assign_var(
                     effect,
                     &element,
-                    &format!("{}[{}]", target.immediate, idx.immediate),
+                    &format!("{}.v[{}]", target.immediate, idx.immediate),
                     &immediate,
                 );
             }
@@ -1184,7 +1235,7 @@ impl Codegen {
                     ) => {
                         writeln!(
                             effect,
-                            "{}[{}] {} {};",
+                            "{}.v[{}] {} {};",
                             target.immediate, index.immediate, compound.op.content, rhs.immediate
                         )
                         .unwrap();
@@ -1205,35 +1256,12 @@ impl Codegen {
         }
     }
 
-    fn assign_var(&mut self, out: &mut String, ty: &TypeInstance, lhs: &str, rhs: &str) {
-        if let TypeInstance::Array { element, len } = ty {
-            writeln!(
-                out,
-                "memcpy((char *){}, (char *){}, sizeof({}) * {len});",
-                lhs,
-                rhs,
-                element.mapped(),
-            )
-            .unwrap();
-        } else {
-            writeln!(out, "{} = {};", lhs, rhs).unwrap();
-        }
+    fn assign_var(&mut self, out: &mut String, _ty: &TypeInstance, lhs: &str, rhs: &str) {
+        writeln!(out, "{} = {};", lhs, rhs).unwrap();
     }
 
     fn define_var(&mut self, out: &mut String, ty: &TypeInstance, lhs: &str, rhs: &str) {
-        if let TypeInstance::Array { element, len } = ty {
-            writeln!(out, "{};", ty.declare(lhs)).unwrap();
-            writeln!(
-                out,
-                "memcpy((char *){}, (char *){}, sizeof({}) * {len});",
-                lhs,
-                rhs,
-                element.mapped(),
-            )
-            .unwrap();
-        } else {
-            writeln!(out, "{} = {};", ty.declare(lhs), rhs).unwrap();
-        }
+        writeln!(out, "{} = {};", ty.declare(lhs), rhs).unwrap();
     }
 
     fn index(&mut self, index: &Index) -> Intermediate {
@@ -1256,7 +1284,7 @@ impl Codegen {
         effect.push_str(&index.effect);
         self.stack.truncate(len);
         let immediate = if ty != TypeInstance::Never {
-            format!("{}[{}]", target.immediate, index.immediate)
+            format!("{}.v[{}]", target.immediate, index.immediate)
         } else {
             "".into()
         };
