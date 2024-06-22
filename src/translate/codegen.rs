@@ -168,7 +168,9 @@ impl Codegen {
                 | TokenKind::PunctHyphenMinus
                 | TokenKind::PunctAsterisk
                 | TokenKind::PunctSolidus
-                | TokenKind::PunctPercentSign,
+                | TokenKind::PunctPercentSign
+                | TokenKind::PunctVerticalLine
+                | TokenKind::PunctAmpersand,
                 TypeInstance::I32 | TypeInstance::I64,
             )
             | (
@@ -669,6 +671,7 @@ impl Codegen {
             Statement::Expression(expr) => {
                 let expr = self.expression(expr);
                 decl.push_str(&expr.decl);
+                globals.push_str(&expr.globals);
                 funcs.push_str(&expr.funcs);
                 effect.push_str(&expr.effect);
             }
@@ -676,6 +679,7 @@ impl Codegen {
                 let len = self.stack.len();
                 let times = self.expression(&repeat.times);
                 decl.push_str(&times.decl);
+                globals.push_str(&times.globals);
                 funcs.push_str(&times.funcs);
                 effect.push_str(&times.effect);
                 if !matches!(times.ty, TypeInstance::I32 | TypeInstance::I64) {
@@ -711,6 +715,7 @@ impl Codegen {
                 let block = self.block(&repeat.block);
                 self.stack.truncate(len);
                 decl.push_str(&block.decl);
+                globals.push_str(&block.globals);
                 funcs.push_str(&block.funcs);
                 effect.push_str(&block.effect);
                 writeln!(effect, "}}").unwrap();
@@ -723,6 +728,7 @@ impl Codegen {
                 let condition = self.expression(&while_.condition);
                 let block = self.block(&while_.block);
                 decl.push_str(&condition.decl);
+                globals.push_str(&condition.globals);
                 funcs.push_str(&condition.funcs);
                 if condition.ty != TypeInstance::Never {
                     if condition.ty != TypeInstance::Bool {
@@ -736,6 +742,7 @@ impl Codegen {
                     writeln!(effect, "if (!{}) break;", condition.immediate).unwrap();
                     self.stack.truncate(len);
                     decl.push_str(&block.decl);
+                    globals.push_str(&block.globals);
                     funcs.push_str(&block.funcs);
                     effect.push_str(&block.effect);
                     writeln!(effect, "}}").unwrap();
@@ -768,20 +775,6 @@ impl Codegen {
                             let scope = scope.borrow();
                             let var = scope.get_var(&declaration.ident.content).unwrap();
                             funcs.push_str(&ty.declare(&var.var.mangle));
-                            if var.var.is_global {
-                                writeln!(
-                                    globals,
-                                    "{}",
-                                    ty.declare(&format!("*g{}", var.var.mangle))
-                                )
-                                .unwrap();
-                                self.assign_var(
-                                    &mut effect,
-                                    &ty,
-                                    &format!("g{}", var.var.mangle),
-                                    &format!("&{}", var.var.mangle),
-                                );
-                            }
                         }
                         Pattern::Tuple(_) => {
                             funcs.push_str(&ty.declare(&format!("a{i}")));
@@ -790,10 +783,27 @@ impl Codegen {
                 }
                 writeln!(decl, ");").unwrap();
                 writeln!(funcs, ") {{").unwrap();
-                for (i, arg) in function.args.iter().enumerate() {
+                for (i, (arg, ty)) in function.args.iter().zip(args.iter()).enumerate() {
                     match arg {
                         Pattern::Ident(_) => unreachable!(),
-                        Pattern::Declaration(_) => {}
+                        Pattern::Declaration(declaration) => {
+                            let scope = scope.borrow();
+                            let var = scope.get_var(&declaration.ident.content).unwrap();
+                            if var.var.is_global {
+                                writeln!(
+                                    globals,
+                                    "{};",
+                                    ty.declare(&format!("*g{}", var.var.mangle))
+                                )
+                                .unwrap();
+                                self.assign_var(
+                                    &mut funcs,
+                                    &ty,
+                                    &format!("g{}", var.var.mangle),
+                                    &format!("&{}", var.var.mangle),
+                                );
+                            }
+                        }
                         Pattern::Tuple(tuple) => {
                             let mut rhs = format!("a{i}");
                             let scope = scope.borrow();
@@ -849,6 +859,7 @@ impl Codegen {
         }
         if let Some(result) = block.result.as_ref().map(|expr| self.expression(expr)) {
             decl.push_str(&result.decl);
+            globals.push_str(&result.globals);
             funcs.push_str(&result.funcs);
             effect.push_str(&result.effect);
             immediate = result.immediate;
@@ -1004,7 +1015,7 @@ impl Codegen {
                     if var.var.is_global {
                         writeln!(
                             globals,
-                            "{}",
+                            "{};",
                             var_ty.declare(&format!("*g{}", var.var.mangle))
                         )
                         .unwrap();
@@ -1094,10 +1105,15 @@ impl Codegen {
         };
         writeln!(effect, "{};", &var_ty.declare(&var.var.mangle)).unwrap();
         if var.var.is_global {
-            writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle))).unwrap();
+            writeln!(
+                globals,
+                "{};",
+                var_ty.declare(&format!("*g{}", var.var.mangle))
+            )
+            .unwrap();
             self.assign_var(
                 &mut effect,
-                &ty,
+                &var_ty,
                 &format!("g{}", var.var.mangle),
                 &format!("&{}", var.var.mangle),
             );
@@ -1205,11 +1221,12 @@ impl Codegen {
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 decl.push_str(&target.decl);
+                globals.push_str(&target.globals);
                 funcs.push_str(&target.funcs);
                 effect.push_str(&target.effect);
                 let idx = self.expression(&index.index);
                 decl.push_str(&idx.decl);
-                funcs.push_str(&idx.funcs);
+                globals.push_str(&idx.globals);
                 effect.push_str(&idx.effect);
                 self.stack.truncate(len);
                 let TypeInstance::Array { element, .. } = target.ty else {
@@ -1291,10 +1308,12 @@ impl Codegen {
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 decl.push_str(&target.decl);
+                globals.push_str(&target.globals);
                 funcs.push_str(&target.funcs);
                 effect.push_str(&target.effect);
                 let index = self.expression(&index.index);
                 decl.push_str(&index.decl);
+                globals.push_str(&index.globals);
                 funcs.push_str(&index.funcs);
                 effect.push_str(&index.effect);
                 self.stack.truncate(len);
@@ -1354,13 +1373,14 @@ impl Codegen {
                                     var.var.mangle, compound.op.content, rhs.immediate
                                 )
                                 .unwrap();
+                            } else {
+                                writeln!(
+                                    effect,
+                                    "{} {} {};",
+                                    var.var.mangle, compound.op.content, rhs.immediate
+                                )
+                                .unwrap();
                             }
-                            writeln!(
-                                effect,
-                                "{} {} {};",
-                                var.var.mangle, compound.op.content, rhs.immediate
-                            )
-                            .unwrap();
                         }
                         _ => panic!(
                             "Could not assign type `{}` to type `{ty}` using `{}`.",

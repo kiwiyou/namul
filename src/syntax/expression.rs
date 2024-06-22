@@ -149,6 +149,43 @@ pub fn parse_logical(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     .parse_next(s)
 }
 
+pub fn parse_bitwise(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_add_sub.parse_next(s)?;
+    let Ok((op, rhs)) = seq!(
+        _: opt(TokenKind::White),
+        alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand)),
+        _: opt(TokenKind::White),
+        parse_add_sub,
+    )
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    let binary = BinaryOperation {
+        lhs: Box::new(Expression::Nonblock(first)),
+        operator: op,
+        rhs: Box::new(Expression::Nonblock(rhs)),
+    };
+    repeat(
+        0..,
+        seq!(
+            _: opt(TokenKind::White),
+            alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand)),
+            _: opt(TokenKind::White),
+            parse_add_sub,
+        ),
+    )
+    .fold(
+        move || binary.clone(),
+        |prev, (op, next)| BinaryOperation {
+            lhs: Box::new(Expression::Nonblock(NonblockExpression::Binary(prev))),
+            operator: op,
+            rhs: Box::new(Expression::Nonblock(next)),
+        },
+    )
+    .map(|binary| NonblockExpression::Binary(binary))
+    .parse_next(s)
+}
+
 pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     let first = parse_mul_div_mod.parse_next(s)?;
     let Ok((op, rhs)) = seq!(
@@ -269,7 +306,7 @@ pub struct Comparison {
 }
 
 pub fn parse_comparison(s: &mut Located<&str>) -> PResult<NonblockExpression> {
-    let first = parse_add_sub.parse_next(s)?;
+    let first = parse_bitwise.parse_next(s)?;
     let Ok(chain) = repeat(
         1..,
         seq!(
@@ -283,7 +320,7 @@ pub fn parse_comparison(s: &mut Located<&str>) -> PResult<NonblockExpression> {
                 TokenKind::PunctGreaterThanSignEqualsSign,
             )),
             _: opt(TokenKind::White),
-            parse_add_sub.map(Expression::Nonblock),
+            parse_bitwise.map(Expression::Nonblock),
         ),
     )
     .parse_next(s) else {
@@ -523,6 +560,8 @@ pub fn parse_compound_assignment(s: &mut Located<&str>) -> PResult<CompoundAssig
             TokenKind::PunctAsteriskEqualsSign,
             TokenKind::PunctSolidusEqualsSign,
             TokenKind::PunctPercentSignEqualsSign,
+            TokenKind::PunctVerticalLineEqualsSign,
+            TokenKind::PunctAmpersandEqualsSign,
         )),
         _: opt(TokenKind::White),
         parse_expression,

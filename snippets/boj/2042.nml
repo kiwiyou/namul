@@ -1,0 +1,44 @@
+|i32 N, i32 M, i32 K|
+[i64; 1000000] A;
+rep i, N {
+    |A[i]|
+}
+[i64; 1000000] f = A;
+init();
+rep M + K {
+    |i32 a, i32 b|
+    b -= 1;
+    if a == 1 {
+        |i64 c|
+        upd(b, c - A[b]);
+        A[b] = c;
+    } else {
+        |i32 c|
+        `$\n`, sum(c) - sum(b);
+    }
+}
+
+fn init() {
+    rep i, N {
+        i32 j = i | i + 1;
+        if j < N {
+            f[j] += f[i];
+        }
+    }
+}
+
+fn sum(i32 k) i64 {
+    i64 sum = 0;
+    while k > 0 {
+        sum += f[k - 1];
+        k &= k - 1;
+    }
+    sum
+}
+
+fn upd(i32 i, i64 d) {
+    while i < N {
+        f[i] += d;
+        i |= i + 1;
+    }
+}
