@@ -40,7 +40,7 @@ impl NameResolver {
         match stmt {
             Statement::Nop => parent,
             Statement::Input(parser) => {
-                let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
+                let scope = Rc::new(RefCell::new(Scope::with_parent(parent, false)));
                 self.scopes.push(Rc::clone(&scope));
                 for arg in parser.arg.iter() {
                     self.assignee(Rc::clone(&scope), arg);
@@ -51,7 +51,7 @@ impl NameResolver {
             Statement::Repeat(repeat) => {
                 let mut scope = self.expression(Rc::clone(&parent), &repeat.times);
                 if let Some(ident) = &repeat.var {
-                    scope = Rc::new(RefCell::new(Scope::with_parent(scope)));
+                    scope = Rc::new(RefCell::new(Scope::with_parent(scope, true)));
                     self.scopes.push(Rc::clone(&scope));
                     let id = self.var_id;
                     self.var_id += 1;
@@ -60,6 +60,7 @@ impl NameResolver {
                         Variable {
                             mangle: format!("_{}_{id}", ident.content),
                             ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                            is_global: false,
                         },
                     );
                 }
@@ -67,7 +68,9 @@ impl NameResolver {
                 parent
             }
             Statement::While(while_) => {
-                let scope = self.expression(Rc::clone(&parent), &while_.condition);
+                let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), true)));
+                self.scopes.push(Rc::clone(&scope));
+                scope = self.expression(scope, &while_.condition);
                 self.block(scope, &while_.block);
                 parent
             }
@@ -82,9 +85,10 @@ impl NameResolver {
                     Variable {
                         mangle: format!("_{name}_{id}"),
                         ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                        is_global: false,
                     },
                 );
-                let scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent))));
+                let scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), true)));
                 self.scopes.push(Rc::clone(&scope));
                 for arg in function.args.iter() {
                     self.pattern(Rc::clone(&scope), &arg);
@@ -170,7 +174,7 @@ impl NameResolver {
                     scope
                 }
                 NonblockExpression::Declaration(declaration) => {
-                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
+                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent, false)));
                     self.scopes.push(Rc::clone(&scope));
                     let id = self.var_id;
                     self.var_id += 1;
@@ -179,13 +183,14 @@ impl NameResolver {
                         Variable {
                             mangle: format!("_{}_{}", declaration.ident.content, id),
                             ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                            is_global: false,
                         },
                     );
                     scope
                 }
                 NonblockExpression::Assignment(assignment) => {
                     self.expression(Rc::clone(&parent), &assignment.rhs);
-                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent)));
+                    let scope = Rc::new(RefCell::new(Scope::with_parent(parent, false)));
                     self.scopes.push(Rc::clone(&scope));
                     self.assignee(Rc::clone(&scope), &assignment.lhs);
                     scope
@@ -206,7 +211,7 @@ impl NameResolver {
     }
 
     pub fn block(&mut self, parent: Rc<RefCell<Scope>>, block: &Block) {
-        let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent))));
+        let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), false)));
         self.scopes.push(Rc::clone(&scope));
         self.block_scopes.push(Rc::clone(&scope));
         for stmt in block.statement.iter() {
@@ -227,6 +232,7 @@ impl NameResolver {
                     Variable {
                         mangle: format!("_{}_{}", decl.ident.content, self.var_id),
                         ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                        is_global: false,
                     },
                 );
                 self.var_id += 1;
@@ -250,6 +256,7 @@ impl NameResolver {
                     Variable {
                         mangle: format!("_{name}_{id}"),
                         ty: Rc::new(RefCell::new(TypeInference::Unknown)),
+                        is_global: false,
                     },
                 );
             }

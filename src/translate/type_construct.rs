@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::syntax::{
     expression::{Assignee, Block, BlockExpression, Expression, NonblockExpression, Place},
+    format::FormatFragment,
     item::Type,
     path::Path,
     statement::{Pattern, Statement},
@@ -61,6 +62,9 @@ impl TypeConstructor {
             }
             Statement::While(while_) => {
                 let len = self.stack.len();
+                let scope = Rc::clone(&self.scopes[self.last]);
+                self.last += 1;
+                self.stack.push(scope);
                 self.expression(&while_.condition);
                 self.block(&while_.block);
                 self.stack.truncate(len);
@@ -71,17 +75,16 @@ impl TypeConstructor {
                 let scope = Rc::clone(&self.scopes[self.last]);
                 self.last += 1;
                 self.stack.push(Rc::clone(&scope));
-                let scope = scope.borrow();
                 let actual = Rc::new(RefCell::new(TypeInference::Function {
-                    args: self.construct_arg(&scope, &function.args),
+                    args: self.construct_arg(&scope.borrow(), &function.args),
                     result: function
                         .result
                         .as_ref()
                         .map_or(Rc::new(RefCell::new(TypeInference::Never)), |result| {
-                            self.construct_type(&scope, result)
+                            self.construct_type(&scope.borrow(), result)
                         }),
                 }));
-                TypeInference::unify(&actual, &var.ty);
+                TypeInference::unify(&actual, &var.var.ty);
                 for arg in function.args.iter() {
                     self.pattern(arg);
                 }
@@ -115,7 +118,12 @@ impl TypeConstructor {
                 NonblockExpression::Path(path) => match path {
                     Path::Simple(simple) => {
                         let scope = Rc::clone(self.stack.last().unwrap());
-                        if scope.borrow().get_var(&simple.content).is_none() {
+                        let mut scope = scope.borrow_mut();
+                        if let Some(var) = scope.get_var(&simple.content) {
+                            if var.is_global {
+                                scope.mark_global(&simple.content);
+                            }
+                        } else {
                             panic!("Could not find {} in scope.", simple.content);
                         }
                     }
@@ -134,6 +142,17 @@ impl TypeConstructor {
                     let len = self.stack.len();
                     for arg in print.args.iter() {
                         self.expression(arg);
+                    }
+                    let scope = Rc::clone(&self.stack.last().unwrap());
+                    for fragment in print.format.fragment.iter() {
+                        if let FormatFragment::Ident(ident) = fragment {
+                            let mut scope = scope.borrow_mut();
+                            if let Some(var) = scope.get_var(&ident.content) {
+                                if var.is_global {
+                                    scope.mark_global(&ident.content);
+                                }
+                            }
+                        }
                     }
                     self.stack.truncate(len);
                 }
@@ -168,10 +187,12 @@ impl TypeConstructor {
                     let scope = Rc::clone(&self.scopes[self.last]);
                     self.last += 1;
                     self.stack.push(Rc::clone(&scope));
-                    let scope = scope.borrow();
-                    let ty = self.construct_type(&scope, &declaration.ty);
-                    let var = scope.get_var(&declaration.ident.content).unwrap();
-                    TypeInference::unify(&var.ty, &ty);
+                    let ty = self.construct_type(&scope.borrow(), &declaration.ty);
+                    let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
+                    if var.var.is_global {
+                        scope.borrow_mut().mark_global(&declaration.ident.content);
+                    }
+                    TypeInference::unify(&var.var.ty, &ty);
                 }
                 NonblockExpression::Assignment(assignment) => {
                     self.expression(&assignment.rhs);
@@ -188,7 +209,12 @@ impl TypeConstructor {
                         Place::Path(path) => match path {
                             Path::Simple(simple) => {
                                 let scope = Rc::clone(self.stack.last().unwrap());
-                                if scope.borrow().get_var(&simple.content).is_none() {
+                                let mut scope = scope.borrow_mut();
+                                if let Some(var) = scope.get_var(&simple.content) {
+                                    if var.is_global {
+                                        scope.mark_global(&simple.content);
+                                    }
+                                } else {
                                     panic!("Could not find {} in scope.", simple.content);
                                 }
                             }
@@ -271,10 +297,13 @@ impl TypeConstructor {
         match pattern {
             Pattern::Ident(_) => {}
             Pattern::Declaration(decl) => {
-                let scope = scope.borrow();
+                let mut scope = scope.borrow_mut();
                 let decl_ty = self.construct_type(&scope, &decl.ty);
                 let var = scope.get_var(&decl.ident.content).unwrap();
-                TypeInference::unify(&var.ty, &decl_ty);
+                if var.is_global {
+                    scope.mark_global(&decl.ident.content);
+                }
+                TypeInference::unify(&var.var.ty, &decl_ty);
             }
             Pattern::Tuple(args) => {
                 for arg in args {
@@ -289,8 +318,11 @@ impl TypeConstructor {
         match assignee {
             Assignee::Declaration(declaration) => {
                 let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
+                if var.is_global {
+                    scope.borrow_mut().mark_global(&declaration.ident.content);
+                }
                 TypeInference::unify(
-                    &var.ty,
+                    &var.var.ty,
                     &self.construct_type(&scope.borrow(), &declaration.ty),
                 );
             }

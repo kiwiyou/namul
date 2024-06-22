@@ -58,13 +58,16 @@ impl TypeChecker {
                     self.last += 1;
                     self.stack.push(Rc::clone(&scope));
                     let var = scope.borrow().get_var(&ident.content).unwrap();
-                    TypeInference::unify(&ty, &var.ty);
+                    TypeInference::unify(&ty, &var.var.ty);
                 }
                 self.block(&repeat.block);
                 self.stack.truncate(len);
             }
             Statement::While(while_) => {
                 let len = self.stack.len();
+                let scope = Rc::clone(&self.scopes[self.last]);
+                self.last += 1;
+                self.stack.push(scope);
                 self.expression(&while_.condition);
                 self.block(&while_.block);
                 self.stack.truncate(len);
@@ -81,7 +84,7 @@ impl TypeChecker {
                 }
                 let result = self.block(&function.block);
                 let actual = Rc::new(RefCell::new(TypeInference::Function { args, result }));
-                TypeInference::unify(&actual, &var.ty);
+                TypeInference::unify(&actual, &var.var.ty);
                 self.stack.pop();
             }
         }
@@ -133,7 +136,7 @@ impl TypeChecker {
                         let Some(var) = scope.get_var(&simple.content) else {
                             panic!("Could not find name {} in scope.", simple.content);
                         };
-                        TypeInference::unify(&ty, &var.ty);
+                        TypeInference::unify(&ty, &var.var.ty);
                     }
                 },
                 NonblockExpression::Binary(binary) => {
@@ -249,7 +252,7 @@ impl TypeChecker {
                             Path::Simple(simple) => {
                                 let scope = Rc::clone(self.stack.last().unwrap());
                                 let var = scope.borrow().get_var(&simple.content).unwrap();
-                                TypeInference::unify(&var.ty, &rhs);
+                                TypeInference::unify(&var.var.ty, &rhs);
                             }
                         },
                         Place::Index(index) => {
@@ -327,12 +330,12 @@ impl TypeChecker {
             Pattern::Ident(ident) => {
                 let scope = scope.borrow();
                 let var = scope.get_var(&ident.content).unwrap();
-                Rc::clone(&var.ty)
+                Rc::clone(&var.var.ty)
             }
             Pattern::Declaration(decl) => {
                 let scope = scope.borrow();
                 let var = scope.get_var(&decl.ident.content).unwrap();
-                Rc::clone(&var.ty)
+                Rc::clone(&var.var.ty)
             }
             Pattern::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(
                 args.iter().map(|arg| self.pattern(arg)).collect(),
@@ -348,10 +351,11 @@ impl TypeChecker {
                     .borrow()
                     .get_var(&declaration.ident.content)
                     .unwrap()
+                    .var
                     .ty
             }
             Assignee::Path(path) => match path {
-                Path::Simple(simple) => scope.borrow().get_var(&simple.content).unwrap().ty,
+                Path::Simple(simple) => scope.borrow().get_var(&simple.content).unwrap().var.ty,
             },
             Assignee::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(
                 args.iter()

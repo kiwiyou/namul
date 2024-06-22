@@ -10,6 +10,7 @@ pub struct Scope {
     parent: Option<Rc<RefCell<Scope>>>,
     var: HashMap<String, Variable>,
     ty: HashMap<String, Rc<RefCell<TypeInference>>>,
+    is_boundary: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -237,6 +238,7 @@ impl TypeInstance {
 pub struct Variable {
     pub mangle: String,
     pub ty: Rc<RefCell<TypeInference>>,
+    pub is_global: bool,
 }
 
 impl Scope {
@@ -258,22 +260,37 @@ impl Scope {
             parent: None,
             var: Default::default(),
             ty,
+            is_boundary: false,
         }
     }
 
-    pub fn with_parent(parent: Rc<RefCell<Scope>>) -> Self {
+    pub fn with_parent(parent: Rc<RefCell<Scope>>, is_boundary: bool) -> Self {
         Self {
             parent: Some(parent),
             var: Default::default(),
             ty: Default::default(),
+            is_boundary,
         }
     }
 
-    pub fn get_var(&self, name: &str) -> Option<Variable> {
+    pub fn get_var(&self, name: &str) -> Option<GetVar> {
         if let Some(var) = self.var.get(name) {
-            return Some(var.clone());
+            return Some(GetVar {
+                is_global: false,
+                var: var.clone(),
+            });
         }
-        self.parent.as_ref()?.borrow().get_var(name)
+        let mut var = self.parent.as_ref()?.borrow().get_var(name)?;
+        var.is_global |= self.is_boundary;
+        Some(var)
+    }
+
+    pub fn mark_global(&mut self, name: &str) {
+        if let Some(var) = self.var.get_mut(name) {
+            var.is_global = true;
+        } else {
+            self.parent.as_ref().map(|p| p.borrow_mut().mark_global(name));
+        }
     }
 
     pub fn get_ty(&self, name: &str) -> Option<Rc<RefCell<TypeInference>>> {
@@ -282,4 +299,9 @@ impl Scope {
         }
         self.parent.as_ref()?.borrow().get_ty(name)
     }
+}
+
+pub struct GetVar {
+    is_global: bool,
+    var: Variable,
 }

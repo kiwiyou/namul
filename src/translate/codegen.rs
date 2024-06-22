@@ -41,6 +41,7 @@ pub struct Codegen {
 pub struct Intermediate {
     ty: TypeInstance,
     decl: String,
+    globals: String,
     funcs: String,
     effect: String,
     immediate: String,
@@ -129,10 +130,15 @@ impl Codegen {
                 };
                 Intermediate {
                     decl: "".into(),
+                    globals: "".into(),
                     funcs: "".into(),
+                    immediate: if var.is_global && !matches!(ty, TypeInstance::Function { .. }) {
+                        format!("(*g{})", var.var.mangle)
+                    } else {
+                        var.var.mangle.clone()
+                    },
                     ty,
                     effect: "".into(),
-                    immediate: format!("{}", var.mangle.clone()),
                 }
             }
         };
@@ -151,6 +157,7 @@ impl Codegen {
         let rhs = self.expression(&binary.rhs);
         self.stack.truncate(len);
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let mut immediate = String::new();
@@ -171,6 +178,8 @@ impl Codegen {
             ) => {
                 decl.push_str(&lhs.decl);
                 decl.push_str(&rhs.decl);
+                globals.push_str(&lhs.globals);
+                globals.push_str(&rhs.globals);
                 funcs.push_str(&lhs.funcs);
                 funcs.push_str(&rhs.funcs);
                 effect.push_str(&lhs.effect);
@@ -199,6 +208,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -215,6 +225,7 @@ impl Codegen {
             Literal::Decimal(decimal) => Intermediate {
                 ty,
                 decl: "".into(),
+                globals: "".into(),
                 funcs: "".into(),
                 effect: "".into(),
                 immediate: decimal.0.content.clone(),
@@ -222,6 +233,7 @@ impl Codegen {
             Literal::Bool(bool) => Intermediate {
                 ty,
                 decl: "".into(),
+                globals: "".into(),
                 funcs: "".into(),
                 effect: "".into(),
                 immediate: match bool.0.kind {
@@ -241,12 +253,14 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let id = self.var_id;
         self.var_id += 1;
         let first = self.expression(&comparison.first);
         decl.push_str(&first.decl);
+        globals.push_str(&first.globals);
         funcs.push_str(&first.funcs);
         effect.push_str(&first.effect);
         let mut prev_ty = first.ty;
@@ -259,6 +273,7 @@ impl Codegen {
                 continue;
             }
             decl.push_str(&next.decl);
+            globals.push_str(&next.globals);
             funcs.push_str(&next.funcs);
             if i > 0 {
                 writeln!(effect, "if (cmp{id}) {{").unwrap();
@@ -317,6 +332,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate: if is_never {
@@ -335,12 +351,14 @@ impl Codegen {
         self.last_infer += 1;
         let len = self.stack.len();
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let mut immediates = vec![];
         for arg in print.args.iter() {
             let expr = self.expression(arg);
             decl.push_str(&expr.decl);
+            globals.push_str(&expr.globals);
             funcs.push_str(&expr.funcs);
             effect.push_str(&expr.effect);
             immediates.push((false, expr.immediate, expr.ty));
@@ -364,13 +382,17 @@ impl Codegen {
                     let Some(var) = scope.borrow().get_var(&ident.content) else {
                         panic!("Could not print undefined variable {}.", ident.content);
                     };
-                    let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(var_ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
                     match var_ty {
                         TypeInstance::I32 | TypeInstance::I64 => {
                             self.feature.insert("write_int");
-                            writeln!(effect, "write_int({});", var.mangle).unwrap();
+                            if var.is_global {
+                                writeln!(effect, "write_int(*g{});", var.var.mangle).unwrap();
+                            } else {
+                                writeln!(effect, "write_int({});", var.var.mangle).unwrap();
+                            }
                         }
                         _ => panic!("Could not print value of type `{}`.", ty),
                     }
@@ -411,6 +433,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate: "".into(),
@@ -424,11 +447,13 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let len = self.stack.len();
         let condition = self.expression(&if_.condition);
         decl.push_str(&condition.decl);
+        globals.push_str(&condition.globals);
         funcs.push_str(&condition.funcs);
         effect.push_str(&condition.effect);
         let mut immediate = String::new();
@@ -444,6 +469,7 @@ impl Codegen {
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
             let truthy = self.block(&if_.truthy);
             decl.push_str(&truthy.decl);
+            globals.push_str(&truthy.globals);
             funcs.push_str(&truthy.funcs);
             effect.push_str(&truthy.effect);
             if ty != TypeInstance::Never {
@@ -452,6 +478,7 @@ impl Codegen {
             writeln!(effect, "}} else {{").unwrap();
             let falsy = self.block(falsy);
             decl.push_str(&falsy.decl);
+            globals.push_str(&falsy.globals);
             funcs.push_str(&falsy.funcs);
             effect.push_str(&falsy.effect);
             if ty != TypeInstance::Never {
@@ -467,6 +494,7 @@ impl Codegen {
             writeln!(effect, "if ({}) {{", condition.immediate).unwrap();
             let truthy = self.block(&if_.truthy);
             decl.push_str(&truthy.decl);
+            globals.push_str(&truthy.globals);
             funcs.push_str(&truthy.funcs);
             effect.push_str(&truthy.effect);
             writeln!(effect, "}}").unwrap();
@@ -475,6 +503,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -488,12 +517,14 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let len = self.stack.len();
         let condition = self.expression(&select.condition);
         let inside = self.stack.len();
         decl.push_str(&condition.decl);
+        globals.push_str(&condition.globals);
         funcs.push_str(&condition.funcs);
         effect.push_str(&condition.effect);
         let id = self.var_id;
@@ -506,6 +537,7 @@ impl Codegen {
         let truthy = self.expression(&select.truthy);
         self.stack.truncate(inside);
         decl.push_str(&truthy.decl);
+        globals.push_str(&truthy.globals);
         funcs.push_str(&truthy.funcs);
         effect.push_str(&truthy.effect);
         if ty != TypeInstance::Never {
@@ -515,6 +547,7 @@ impl Codegen {
         let falsy = self.expression(&select.falsy);
         self.stack.truncate(len);
         decl.push_str(&falsy.decl);
+        globals.push_str(&falsy.globals);
         funcs.push_str(&falsy.funcs);
         effect.push_str(&falsy.effect);
         if ty != TypeInstance::Never {
@@ -529,6 +562,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -542,6 +576,7 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let ty_mapped = ty.mapped();
@@ -552,6 +587,7 @@ impl Codegen {
         for arg in make_tuple.args.iter() {
             let arg = self.expression(arg);
             decl.push_str(&arg.decl);
+            globals.push_str(&arg.globals);
             funcs.push_str(&arg.funcs);
             effect.push_str(&arg.effect);
             construct.push_str(&arg.immediate);
@@ -567,6 +603,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -580,6 +617,7 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let ty_mapped = ty.mapped();
@@ -590,6 +628,7 @@ impl Codegen {
         for arg in make_array.args.iter() {
             let arg = self.expression(arg);
             decl.push_str(&arg.decl);
+            globals.push_str(&arg.globals);
             funcs.push_str(&arg.funcs);
             effect.push_str(&arg.effect);
             construct.push_str(&arg.immediate);
@@ -605,6 +644,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -613,6 +653,7 @@ impl Codegen {
 
     pub fn statement(&mut self, statement: &Statement) -> Intermediate {
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         match statement {
@@ -622,7 +663,7 @@ impl Codegen {
                 self.last_scope += 1;
                 self.stack.push(Rc::clone(&scope));
                 for arg in parser.arg.iter() {
-                    self.assignee_input(&mut decl, &mut funcs, &mut effect, arg);
+                    self.assignee_input(&mut decl, &mut globals, &mut funcs, &mut effect, arg);
                 }
             }
             Statement::Expression(expr) => {
@@ -652,10 +693,20 @@ impl Codegen {
                     self.last_scope += 1;
                     self.stack.push(Rc::clone(&scope));
                     let var = scope.borrow().get_var(&ident.content).unwrap();
-                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    self.define_var(&mut effect, &ty, &var.mangle, "i");
+                    self.define_var(&mut effect, &ty, &var.var.mangle, "i");
+                    if var.var.is_global {
+                        writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle)))
+                            .unwrap();
+                        self.assign_var(
+                            &mut effect,
+                            &ty,
+                            &format!("g{}", var.var.mangle),
+                            &format!("&{}", var.var.mangle),
+                        );
+                    }
                 }
                 let block = self.block(&repeat.block);
                 self.stack.truncate(len);
@@ -666,6 +717,9 @@ impl Codegen {
             }
             Statement::While(while_) => {
                 let len = self.stack.len();
+                let scope = Rc::clone(&self.scopes[self.last_scope]);
+                self.last_scope += 1;
+                self.stack.push(scope);
                 let condition = self.expression(&while_.condition);
                 let block = self.block(&while_.block);
                 decl.push_str(&condition.decl);
@@ -694,14 +748,14 @@ impl Codegen {
                 let block = block.borrow();
                 let var = block.get_var(&function.ident.content).unwrap();
                 let Some(TypeInstance::Function { args, result }) =
-                    self.synthesize(&var.ty.borrow())
+                    self.synthesize(&var.var.ty.borrow())
                 else {
                     panic!("Could not deduce type.");
                 };
                 let scope = Rc::clone(&self.scopes[self.last_scope]);
                 self.last_scope += 1;
-                write!(decl, "{}(", &result.declare(&var.mangle)).unwrap();
-                write!(funcs, "{}(", &result.declare(&var.mangle)).unwrap();
+                write!(decl, "{}(", &result.declare(&var.var.mangle)).unwrap();
+                write!(funcs, "{}(", &result.declare(&var.var.mangle)).unwrap();
                 for (i, (arg, ty)) in function.args.iter().zip(args.iter()).enumerate() {
                     if i > 0 {
                         decl.push_str(", ");
@@ -713,7 +767,21 @@ impl Codegen {
                         Pattern::Declaration(declaration) => {
                             let scope = scope.borrow();
                             let var = scope.get_var(&declaration.ident.content).unwrap();
-                            funcs.push_str(&ty.declare(&var.mangle));
+                            funcs.push_str(&ty.declare(&var.var.mangle));
+                            if var.var.is_global {
+                                writeln!(
+                                    globals,
+                                    "{}",
+                                    ty.declare(&format!("*g{}", var.var.mangle))
+                                )
+                                .unwrap();
+                                self.assign_var(
+                                    &mut effect,
+                                    &ty,
+                                    &format!("g{}", var.var.mangle),
+                                    &format!("&{}", var.var.mangle),
+                                );
+                            }
                         }
                         Pattern::Tuple(_) => {
                             funcs.push_str(&ty.declare(&format!("a{i}")));
@@ -729,7 +797,7 @@ impl Codegen {
                         Pattern::Tuple(tuple) => {
                             let mut rhs = format!("a{i}");
                             let scope = scope.borrow();
-                            self.assign_pattern(&mut funcs, &scope, &mut rhs, &tuple);
+                            self.assign_pattern(&mut funcs, &mut globals, &scope, &mut rhs, &tuple);
                         }
                     }
                 }
@@ -742,12 +810,14 @@ impl Codegen {
                 }
                 writeln!(funcs, "}}").unwrap();
                 decl.push_str(&block.decl);
+                globals.push_str(&block.globals);
                 funcs.push_str(&block.funcs);
             }
         }
         Intermediate {
             ty: TypeInstance::Never,
             decl,
+            globals,
             funcs,
             effect,
             immediate: "".into(),
@@ -766,12 +836,14 @@ impl Codegen {
         self.stack.push(Rc::clone(&scope));
         self.block_stack.push(scope);
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let mut immediate = String::new();
         for statement in block.statement.iter() {
             let statement = self.statement(statement);
             decl.push_str(&statement.decl);
+            globals.push_str(&statement.globals);
             funcs.push_str(&statement.funcs);
             effect.push_str(&statement.effect);
         }
@@ -786,6 +858,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -879,6 +952,7 @@ impl Codegen {
         out.push_str(&translator.decl);
         out.push_str(&intermediate.decl);
         out.push_str(&translator.structs);
+        out.push_str(&intermediate.globals);
         out.push_str(&intermediate.funcs);
         writeln!(out, "int main;").unwrap();
         writeln!(out, "int __libc_start_main() {{").unwrap();
@@ -901,6 +975,7 @@ impl Codegen {
     fn assign_pattern(
         &mut self,
         effect: &mut String,
+        globals: &mut String,
         scope: &Scope,
         rhs: &mut String,
         args: &[Pattern],
@@ -911,17 +986,35 @@ impl Codegen {
             match arg {
                 Pattern::Ident(ident) => {
                     let var = scope.get_var(&ident.content).unwrap();
-                    let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(var_ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    self.assign_var(effect, &var_ty, &var.mangle, &rhs);
+                    if var.is_global {
+                        self.assign_var(effect, &var_ty, &format!("*g{}", var.var.mangle), &rhs);
+                    } else {
+                        self.assign_var(effect, &var_ty, &var.var.mangle, &rhs);
+                    }
                 }
                 Pattern::Declaration(declaration) => {
                     let var = scope.get_var(&declaration.ident.content).unwrap();
-                    let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(var_ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    self.define_var(effect, &var_ty, &var.mangle, &rhs);
+                    self.define_var(effect, &var_ty, &var.var.mangle, &rhs);
+                    if var.var.is_global {
+                        writeln!(
+                            globals,
+                            "{}",
+                            var_ty.declare(&format!("*g{}", var.var.mangle))
+                        )
+                        .unwrap();
+                        self.assign_var(
+                            effect,
+                            &var_ty,
+                            &format!("g{}", var.var.mangle),
+                            &format!("&{}", var.var.mangle),
+                        );
+                    }
                 }
                 Pattern::Tuple(_) => todo!(),
             }
@@ -936,11 +1029,13 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let callee = self.expression(&invocation.callee);
         let len = self.stack.len();
         decl.push_str(&callee.decl);
+        globals.push_str(&callee.globals);
         funcs.push_str(&callee.funcs);
         effect.push_str(&callee.effect);
         let mut call = String::new();
@@ -954,6 +1049,7 @@ impl Codegen {
             }
             let arg = self.expression(arg);
             decl.push_str(&arg.decl);
+            globals.push_str(&arg.globals);
             funcs.push_str(&arg.funcs);
             effect.push_str(&arg.effect);
             call.push_str(&arg.immediate);
@@ -961,7 +1057,7 @@ impl Codegen {
         self.stack.truncate(len);
         write!(call, ")").unwrap();
         if ty == TypeInstance::Never {
-            effect.push_str(&call);
+            writeln!(effect, "{call};").unwrap();
         } else {
             self.define_var(&mut effect, &ty, &ident, &call);
         }
@@ -973,6 +1069,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
@@ -986,18 +1083,29 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut effect = String::new();
+        let mut globals = String::new();
         let scope = Rc::clone(&self.scopes[self.last_scope]);
         self.stack.push(Rc::clone(&scope));
         self.last_scope += 1;
         let scope = scope.borrow();
         let var = scope.get_var(&declaration.ident.content).unwrap();
-        let Some(var_ty) = self.synthesize(&var.ty.borrow()) else {
+        let Some(var_ty) = self.synthesize(&var.var.ty.borrow()) else {
             panic!("Could not deduce type.");
         };
-        writeln!(effect, "{};", &var_ty.declare(&var.mangle)).unwrap();
+        writeln!(effect, "{};", &var_ty.declare(&var.var.mangle)).unwrap();
+        if var.var.is_global {
+            writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle))).unwrap();
+            self.assign_var(
+                &mut effect,
+                &ty,
+                &format!("g{}", var.var.mangle),
+                &format!("&{}", var.var.mangle),
+            );
+        }
         Intermediate {
             ty,
             decl: "".into(),
+            globals,
             funcs: "".into(),
             effect,
             immediate: "".into(),
@@ -1011,6 +1119,7 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut effect = String::new();
+        let mut globals = String::new();
         let mut rhs = self.expression(&assignment.rhs);
         let mut decl = rhs.decl;
         let mut funcs = rhs.funcs;
@@ -1020,6 +1129,7 @@ impl Codegen {
         self.stack.push(Rc::clone(&scope));
         self.assignee(
             &mut decl,
+            &mut globals,
             &mut funcs,
             &mut effect,
             &mut rhs.immediate,
@@ -1028,6 +1138,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate: "".into(),
@@ -1037,6 +1148,7 @@ impl Codegen {
     fn assignee(
         &mut self,
         decl: &mut String,
+        globals: &mut String,
         funcs: &mut String,
         effect: &mut String,
         immediate: &mut String,
@@ -1046,25 +1158,38 @@ impl Codegen {
         match assignee {
             Assignee::Declaration(declaration) => {
                 let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
-                let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                     panic!("Could not deduce type.");
                 };
-                self.define_var(effect, &ty, &var.mangle, &immediate);
+                self.define_var(effect, &ty, &var.var.mangle, &immediate);
+                if var.var.is_global {
+                    writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle))).unwrap();
+                    self.assign_var(
+                        effect,
+                        &ty,
+                        &format!("g{}", var.var.mangle),
+                        &format!("&{}", var.var.mangle),
+                    );
+                }
             }
             Assignee::Path(path) => match path {
                 Path::Simple(simple) => {
                     let var = scope.borrow().get_var(&simple.content).unwrap();
-                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    self.assign_var(effect, &ty, &var.mangle, &immediate);
+                    if var.is_global {
+                        self.assign_var(effect, &ty, &format!("*g{}", var.var.mangle), &immediate);
+                    } else {
+                        self.assign_var(effect, &ty, &var.var.mangle, &immediate);
+                    }
                 }
             },
             Assignee::Tuple(args) => {
                 let len = immediate.len();
                 for (i, arg) in args.iter().enumerate() {
                     write!(immediate, ".m{i}").unwrap();
-                    self.assignee(decl, funcs, effect, immediate, arg);
+                    self.assignee(decl, globals, funcs, effect, immediate, arg);
                     immediate.truncate(len);
                 }
             }
@@ -1072,7 +1197,7 @@ impl Codegen {
                 let len = immediate.len();
                 for (i, arg) in args.iter().enumerate() {
                     write!(immediate, ".v[{i}]").unwrap();
-                    self.assignee(decl, funcs, effect, immediate, arg);
+                    self.assignee(decl, globals, funcs, effect, immediate, arg);
                     immediate.truncate(len);
                 }
             }
@@ -1103,6 +1228,7 @@ impl Codegen {
     fn assignee_input(
         &mut self,
         decl: &mut String,
+        globals: &mut String,
         funcs: &mut String,
         effect: &mut String,
         assignee: &Assignee,
@@ -1111,7 +1237,7 @@ impl Codegen {
         match assignee {
             Assignee::Declaration(declaration) => {
                 let var = scope.borrow().get_var(&declaration.ident.content).unwrap();
-                let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                     panic!("Could not deduce type.");
                 };
                 let getter = match ty {
@@ -1123,12 +1249,21 @@ impl Codegen {
                     }
                     _ => panic!("Could not find parser for type `{ty}`."),
                 };
-                self.define_var(effect, &ty, &var.mangle, &getter);
+                self.define_var(effect, &ty, &var.var.mangle, &getter);
+                if var.var.is_global {
+                    writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle))).unwrap();
+                    self.assign_var(
+                        effect,
+                        &ty,
+                        &format!("g{}", var.var.mangle),
+                        &format!("&{}", var.var.mangle),
+                    );
+                }
             }
             Assignee::Path(path) => match path {
                 Path::Simple(simple) => {
                     let var = scope.borrow().get_var(&simple.content).unwrap();
-                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
                     let getter = match ty {
@@ -1140,12 +1275,16 @@ impl Codegen {
                         }
                         _ => panic!("Could not find parser for type `{ty}`."),
                     };
-                    self.assign_var(effect, &ty, &var.mangle, &getter);
+                    if var.is_global {
+                        self.assign_var(effect, &ty, &format!("*g{}", var.var.mangle), &getter);
+                    } else {
+                        self.assign_var(effect, &ty, &var.var.mangle, &getter);
+                    }
                 }
             },
             Assignee::Tuple(args) | Assignee::Array(args) => {
                 for arg in args.iter() {
-                    self.assignee_input(decl, funcs, effect, arg);
+                    self.assignee_input(decl, globals, funcs, effect, arg);
                 }
             }
             Assignee::Index(index) => {
@@ -1174,7 +1313,7 @@ impl Codegen {
                 self.assign_var(
                     effect,
                     &element,
-                    &format!("{}[{}]", target.immediate, index.immediate),
+                    &format!("{}.v[{}]", target.immediate, index.immediate),
                     &getter,
                 );
             }
@@ -1191,6 +1330,7 @@ impl Codegen {
         let rhs = self.expression(&compound.rhs);
         self.stack.truncate(len);
         let mut decl = rhs.decl;
+        let mut globals = rhs.globals;
         let mut funcs = rhs.funcs;
         let mut effect = rhs.effect;
         let scope = Rc::clone(self.stack.last().unwrap());
@@ -1198,7 +1338,7 @@ impl Codegen {
             Place::Path(path) => match path {
                 Path::Simple(simple) => {
                     let var = scope.borrow().get_var(&simple.content).unwrap();
-                    let Some(ty) = self.synthesize(&var.ty.borrow()) else {
+                    let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
                     match (&ty, compound.op.kind, &rhs.ty) {
@@ -1207,10 +1347,18 @@ impl Codegen {
                             _,
                             TypeInstance::I32 | TypeInstance::I64,
                         ) => {
+                            if var.is_global {
+                                writeln!(
+                                    effect,
+                                    "*g{} {} {};",
+                                    var.var.mangle, compound.op.content, rhs.immediate
+                                )
+                                .unwrap();
+                            }
                             writeln!(
                                 effect,
                                 "{} {} {};",
-                                var.mangle, compound.op.content, rhs.immediate
+                                var.var.mangle, compound.op.content, rhs.immediate
                             )
                             .unwrap();
                         }
@@ -1225,10 +1373,12 @@ impl Codegen {
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 decl.push_str(&target.decl);
+                globals.push_str(&target.globals);
                 funcs.push_str(&target.funcs);
                 effect.push_str(&target.effect);
                 let index = self.expression(&index.index);
                 decl.push_str(&index.decl);
+                globals.push_str(&index.globals);
                 funcs.push_str(&index.funcs);
                 effect.push_str(&index.effect);
                 self.stack.truncate(len);
@@ -1258,6 +1408,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate: "".into(),
@@ -1269,7 +1420,7 @@ impl Codegen {
     }
 
     fn define_var(&mut self, out: &mut String, ty: &TypeInstance, lhs: &str, rhs: &str) {
-        writeln!(out, "{} = {};", ty.declare(lhs), rhs).unwrap();
+        self.assign_var(out, ty, &ty.declare(lhs), rhs);
     }
 
     fn index(&mut self, index: &Index) -> Intermediate {
@@ -1280,14 +1431,17 @@ impl Codegen {
         self.last_infer += 1;
         let len = self.stack.len();
         let mut decl = String::new();
+        let mut globals = String::new();
         let mut funcs = String::new();
         let mut effect = String::new();
         let target = self.expression(&index.target);
         decl.push_str(&target.decl);
+        globals.push_str(&target.globals);
         funcs.push_str(&target.funcs);
         effect.push_str(&target.effect);
         let index = self.expression(&index.index);
         decl.push_str(&index.decl);
+        globals.push_str(&index.globals);
         funcs.push_str(&index.funcs);
         effect.push_str(&index.effect);
         self.stack.truncate(len);
@@ -1299,6 +1453,7 @@ impl Codegen {
         Intermediate {
             ty,
             decl,
+            globals,
             funcs,
             effect,
             immediate,
