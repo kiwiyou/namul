@@ -51,7 +51,7 @@ impl NameResolver {
             Statement::Repeat(repeat) => {
                 let mut scope = self.expression(Rc::clone(&parent), &repeat.times);
                 if let Some(ident) = &repeat.var {
-                    scope = Rc::new(RefCell::new(Scope::with_parent(scope, true)));
+                    scope = Rc::new(RefCell::new(Scope::with_parent(scope, false)));
                     self.scopes.push(Rc::clone(&scope));
                     let id = self.var_id;
                     self.var_id += 1;
@@ -68,7 +68,7 @@ impl NameResolver {
                 parent
             }
             Statement::While(while_) => {
-                let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), true)));
+                let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), false)));
                 self.scopes.push(Rc::clone(&scope));
                 scope = self.expression(scope, &while_.condition);
                 self.block(scope, &while_.block);

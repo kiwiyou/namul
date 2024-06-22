@@ -1258,6 +1258,7 @@ impl Codegen {
                 }
             }
             Assignee::Index(index) => {
+                self.last_infer += 1;
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 decl.push_str(&target.decl);
@@ -1292,6 +1293,44 @@ impl Codegen {
         }
     }
 
+    fn assign_input(
+        &mut self,
+        globals: &mut String,
+        funcs: &mut String,
+        effect: &mut String,
+        ty: &TypeInstance,
+        lhs: &str,
+    ) {
+        match ty {
+            TypeInstance::I32 | TypeInstance::I64 => {
+                self.feature.insert("reader_def");
+                self.feature.insert("read_white");
+                self.feature.insert("read_int");
+                writeln!(effect, "{lhs} = read_int();").unwrap();
+            }
+            TypeInstance::Array { element, len, .. } => {
+                let id = self.var_id;
+                self.var_id += 1;
+                writeln!(effect, "for (int i{id} = 0; i{id} < {len}; ++i{id}) {{").unwrap();
+                self.assign_input(globals, funcs, effect, element, &format!("{lhs}.v[i{id}]"));
+                writeln!(effect, "}}").unwrap();
+            }
+            TypeInstance::Slice { element, .. } => {
+                let id = self.var_id;
+                self.var_id += 1;
+                writeln!(
+                    effect,
+                    "for ({} *i{id} = {lhs}.v; i{id} < {lhs}.e; ++i{id}) {{",
+                    element.mapped()
+                )
+                .unwrap();
+                self.assign_input(globals, funcs, effect, element, &format!("(*i{id})"));
+                writeln!(effect, "}}").unwrap();
+            }
+            _ => panic!("Could not find parser for type `{ty}`."),
+        };
+    }
+
     fn assignee_input(
         &mut self,
         decl: &mut String,
@@ -1307,16 +1346,11 @@ impl Codegen {
                 let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                     panic!("Could not deduce type.");
                 };
-                let getter = match ty {
-                    TypeInstance::I32 | TypeInstance::I64 => {
-                        self.feature.insert("reader_def");
-                        self.feature.insert("read_white");
-                        self.feature.insert("read_int");
-                        "read_int()"
-                    }
-                    _ => panic!("Could not find parser for type `{ty}`."),
-                };
-                self.define_var(effect, &ty, &var.var.mangle, &getter);
+                if matches!(ty, TypeInstance::Slice { .. }) {
+                    panic!("Could not initialize slice with input");
+                }
+                writeln!(effect, "{};", ty.declare(&var.var.mangle)).unwrap();
+                self.assign_input(globals, funcs, effect, &ty, &var.var.mangle);
                 if var.var.is_global {
                     writeln!(globals, "{};", ty.declare(&format!("*g{}", var.var.mangle))).unwrap();
                     self.assign_var(
@@ -1355,6 +1389,11 @@ impl Codegen {
                 }
             }
             Assignee::Index(index) => {
+                let current_infer = Rc::clone(&self.inference[self.last_infer]);
+                let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+                    panic!("Could not deduce type.");
+                };
+                self.last_infer += 1;
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 decl.push_str(&target.decl);
@@ -1370,24 +1409,31 @@ impl Codegen {
                 match &target.ty {
                     TypeInstance::Array { element, .. } | TypeInstance::Slice { element, .. } => {
                         match &idx.ty {
-                            TypeInstance::I32 | TypeInstance::I64 => {
-                                self.feature.insert("reader_def");
-                                self.feature.insert("read_white");
-                                self.feature.insert("read_int");
-                                self.assign_var(
-                                    effect,
-                                    &element,
-                                    &format!("{}.v[{}]", target.immediate, idx.immediate),
-                                    &"read_int()",
-                                );
-                            }
-                            _ => panic!(
-                                "Could not index-assign type `{}` with type `{}`.",
-                                target.ty, idx.ty
+                            TypeInstance::I32 | TypeInstance::I64 => self.assign_input(
+                                globals,
+                                funcs,
+                                effect,
+                                element,
+                                &format!("{}.v[{}]", target.immediate, idx.immediate),
                             ),
+                            TypeInstance::Range { .. } => {
+                                let id = self.var_id;
+                                self.var_id += 1;
+                                self.define_var(
+                                    effect,
+                                    &ty,
+                                    &format!("s{id}"),
+                                    &format!(
+                                        "{{&{}.v[{}.l], &{0}.v[{1}.r]}}",
+                                        target.immediate, idx.immediate
+                                    ),
+                                );
+                                self.assign_input(globals, funcs, effect, &ty, &format!("s{id}"));
+                            }
+                            _ => unreachable!(),
                         }
                     }
-                    _ => panic!("Could not index into type `{}`.", target.ty),
+                    _ => unreachable!("{}", target.ty),
                 }
             }
         }

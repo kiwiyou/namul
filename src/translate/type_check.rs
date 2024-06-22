@@ -44,7 +44,7 @@ impl TypeChecker {
                 self.last += 1;
                 self.stack.push(scope);
                 for arg in input.arg.iter() {
-                    self.assignee(arg);
+                    self.assignee(arg, true);
                 }
             }
             Statement::Expression(expr) => {
@@ -239,7 +239,7 @@ impl TypeChecker {
                     let scope = Rc::clone(&self.scopes[self.last]);
                     self.last += 1;
                     self.stack.push(scope);
-                    let lhs = self.assignee(&assignment.lhs);
+                    let lhs = self.assignee(&assignment.lhs, false);
                     TypeInference::unify(&lhs, &rhs);
                     TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Never)));
                 }
@@ -302,12 +302,22 @@ impl TypeChecker {
                                         end,
                                         &Rc::new(RefCell::new(TypeInference::Integer)),
                                     );
-                                    TypeInference::unify(
-                                        &ty,
-                                        &Rc::new(RefCell::new(TypeInference::Slice {
-                                            element: Rc::clone(&element),
-                                        })),
-                                    );
+                                    let end_ty = end.borrow();
+                                    if matches!(
+                                        &*end_ty,
+                                        TypeInference::Integer
+                                            | TypeInference::Simple(TypeInstance::I32)
+                                            | TypeInference::Simple(TypeInstance::I64)
+                                    ) {
+                                        TypeInference::unify(
+                                            &ty,
+                                            &Rc::new(RefCell::new(TypeInference::Slice {
+                                                element: Rc::clone(&element),
+                                            })),
+                                        );
+                                    } else {
+                                        ty.replace(TypeInference::Error);
+                                    }
                                 }
                                 _ => {
                                     ty.replace(TypeInference::Error);
@@ -380,7 +390,7 @@ impl TypeChecker {
         }
     }
 
-    fn assignee(&mut self, assignee: &Assignee) -> Rc<RefCell<TypeInference>> {
+    fn assignee(&mut self, assignee: &Assignee, is_input: bool) -> Rc<RefCell<TypeInference>> {
         let scope = Rc::clone(self.stack.last().unwrap());
         match assignee {
             Assignee::Declaration(declaration) => {
@@ -396,14 +406,14 @@ impl TypeChecker {
             },
             Assignee::Tuple(args) => Rc::new(RefCell::new(TypeInference::Tuple(
                 args.iter()
-                    .map(|assignee| self.assignee(assignee))
+                    .map(|assignee| self.assignee(assignee, is_input))
                     .collect(),
             ))),
             Assignee::Array(args) => {
                 let element = args.iter().fold(
                     Rc::new(RefCell::new(TypeInference::Unknown)),
                     |prev, arg| {
-                        TypeInference::unify(&prev, &self.assignee(arg));
+                        TypeInference::unify(&prev, &self.assignee(arg, is_input));
                         prev
                     },
                 );
@@ -413,23 +423,46 @@ impl TypeChecker {
                 }))
             }
             Assignee::Index(index) => {
+                let ty = Rc::new(RefCell::new(TypeInference::Unknown));
+                self.inference.push(Rc::clone(&ty));
                 let len = self.stack.len();
                 let target = self.expression(&index.target);
                 let index = self.expression(&index.index);
                 self.stack.truncate(len);
                 let target_ty = target.borrow();
                 let index_ty = index.borrow();
-                match &*target_ty {
+                let res = match &*target_ty {
                     TypeInference::Array { element, .. } | TypeInference::Slice { element } => {
                         match &*index_ty {
                             TypeInference::Integer
                             | TypeInference::Simple(TypeInstance::I32)
                             | TypeInference::Simple(TypeInstance::I64) => Rc::clone(&element),
+                            TypeInference::Range { end } if is_input => {
+                                TypeInference::unify(
+                                    end,
+                                    &Rc::new(RefCell::new(TypeInference::Integer)),
+                                );
+                                let end_ty = end.borrow();
+                                if matches!(
+                                    &*end_ty,
+                                    TypeInference::Integer
+                                        | TypeInference::Simple(TypeInstance::I32)
+                                        | TypeInference::Simple(TypeInstance::I64)
+                                ) {
+                                    Rc::new(RefCell::new(TypeInference::Slice {
+                                        element: Rc::clone(&element),
+                                    }))
+                                } else {
+                                    Rc::new(RefCell::new(TypeInference::Error))
+                                }
+                            }
                             _ => Rc::new(RefCell::new(TypeInference::Error)),
                         }
                     }
                     _ => Rc::new(RefCell::new(TypeInference::Error)),
-                }
+                };
+                TypeInference::unify(&ty, &res);
+                ty
             }
         }
     }
