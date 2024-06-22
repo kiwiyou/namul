@@ -206,6 +206,13 @@ impl NameResolver {
                     parent
                 }
                 NonblockExpression::Index(index) => self.index(parent, index),
+                NonblockExpression::Return(return_) => {
+                    if let Some(value) = &return_.value {
+                        self.expression(parent, value)
+                    } else {
+                        parent
+                    }
+                }
             },
         }
     }

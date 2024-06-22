@@ -9,7 +9,7 @@ use crate::syntax::{
     expression::{
         Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
         CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeArray, MakeTuple,
-        NonblockExpression, Place, Print, Select,
+        NonblockExpression, Place, Print, Return, Select,
     },
     format::FormatFragment,
     literal::Literal,
@@ -899,6 +899,7 @@ impl Codegen {
                     self.compound_assignment(compound)
                 }
                 NonblockExpression::Index(index) => self.index(index),
+                NonblockExpression::Return(return_) => self.return_(return_),
             },
         }
     }
@@ -1477,6 +1478,32 @@ impl Codegen {
             funcs,
             effect,
             immediate,
+        }
+    }
+
+    fn return_(&mut self, return_: &Return) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        if let Some(value) = &return_.value {
+            let mut expr = self.expression(value);
+            if expr.ty == TypeInstance::Never {
+                writeln!(expr.effect, "return;").unwrap();
+            } else {
+                writeln!(expr.effect, "return {};", expr.immediate).unwrap();
+            }
+            expr
+        } else {
+            Intermediate {
+                ty,
+                decl: "".into(),
+                globals: "".into(),
+                funcs: "".into(),
+                effect: "return;".into(),
+                immediate: "".into(),
+            }
         }
     }
 }

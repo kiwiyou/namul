@@ -34,6 +34,7 @@ pub enum NonblockExpression {
     Declaration(Declaration),
     CompoundAssignment(CompoundAssignment),
     Index(Index),
+    Return(Return),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
@@ -264,6 +265,7 @@ pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<NonblockExpression> {
 pub fn parse_term(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     alt((
         parse_parentheses,
+        parse_return.map(NonblockExpression::Return),
         parse_make_tuple.map(NonblockExpression::MakeTuple),
         parse_make_array.map(NonblockExpression::MakeArray),
         parse_invocation.map(NonblockExpression::Invocation),
@@ -419,16 +421,16 @@ pub fn parse_invocation(s: &mut Located<&str>) -> PResult<Invocation> {
 
 #[derive(Debug, Clone)]
 pub struct Return {
-    pub value: Box<Expression>,
+    pub value: Option<Box<Expression>>,
 }
 
 pub fn parse_return(s: &mut Located<&str>) -> PResult<Return> {
     preceded(
         (TokenKind::KeywordReturn, opt(TokenKind::White)),
-        parse_expression,
+        opt(parse_expression),
     )
     .map(|value| Return {
-        value: Box::new(value),
+        value: value.map(Box::new),
     })
     .parse_next(s)
 }

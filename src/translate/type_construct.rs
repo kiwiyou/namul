@@ -233,6 +233,11 @@ impl TypeConstructor {
                     self.expression(&index.index);
                     self.stack.truncate(len);
                 }
+                NonblockExpression::Return(return_) => {
+                    if let Some(value) = &return_.value {
+                        self.expression(value)
+                    }
+                }
             },
         };
     }

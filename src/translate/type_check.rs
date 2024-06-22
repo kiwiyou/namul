@@ -293,9 +293,15 @@ impl TypeChecker {
                             TypeInference::unify(&ty, &element);
                         }
                         _ => {
-                            TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Error)))
+                            TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Error)));
                         }
                     }
+                }
+                NonblockExpression::Return(return_) => {
+                    if let Some(value) = &return_.value {
+                        self.expression(&value);
+                    }
+                    TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Never)));
                 }
             },
         };
