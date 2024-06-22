@@ -91,13 +91,13 @@ impl TypeChecker {
     }
 
     fn expression(&mut self, expr: &Expression) -> Rc<RefCell<TypeInference>> {
-        let ty = Rc::new(RefCell::new(TypeInference::Unknown));
+        let mut ty = Rc::new(RefCell::new(TypeInference::Unknown));
         self.inference.push(Rc::clone(&ty));
         match expr {
             Expression::Block(block) => match block {
                 BlockExpression::Block(block) => {
-                    let block = self.block(block);
-                    TypeInference::unify(&block, &ty);
+                    self.inference.pop();
+                    ty = self.block(block);
                 }
                 BlockExpression::If(if_) => {
                     let len = self.stack.len();
