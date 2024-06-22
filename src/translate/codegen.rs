@@ -478,7 +478,7 @@ impl Codegen {
                 self.assign_var(&mut effect, &ty, &ident, &truthy.immediate);
             }
             writeln!(effect, "}} else {{").unwrap();
-            let falsy = self.block(falsy);
+            let falsy = self.expression(falsy);
             decl.push_str(&falsy.decl);
             globals.push_str(&falsy.globals);
             funcs.push_str(&falsy.funcs);

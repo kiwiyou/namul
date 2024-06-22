@@ -279,7 +279,7 @@ pub fn parse_term(s: &mut Located<&str>) -> PResult<NonblockExpression> {
 pub struct If {
     pub condition: Box<Expression>,
     pub truthy: Block,
-    pub falsy: Option<Block>,
+    pub falsy: Option<Box<Expression>>,
 }
 
 pub fn parse_if(s: &mut Located<&str>) -> PResult<If> {
@@ -289,9 +289,12 @@ pub fn parse_if(s: &mut Located<&str>) -> PResult<If> {
         parse_expression,
         _: opt(TokenKind::White),
         parse_block,
-        opt(
-            preceded((opt(TokenKind::White), "else", opt(TokenKind::White)), parse_block)
-        )
+        opt(preceded((opt(TokenKind::White), TokenKind::KeywordElse, opt(TokenKind::White)),
+            alt((
+                parse_if.map(BlockExpression::If).map(Expression::Block),
+                parse_block.map(BlockExpression::Block).map(Expression::Block),
+            )).map(Box::new)
+        )),
     )
     .map(|(condition, truthy, falsy)| If {
         condition: Box::new(condition),

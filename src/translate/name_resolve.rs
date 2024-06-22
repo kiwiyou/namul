@@ -114,7 +114,7 @@ impl NameResolver {
                     let scope = self.expression(Rc::clone(&parent), &if_.condition);
                     self.block(Rc::clone(&scope), &if_.truthy);
                     if let Some(falsy) = &if_.falsy {
-                        self.block(scope, falsy);
+                        self.expression(scope, falsy);
                     }
                     parent
                 }

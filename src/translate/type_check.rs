@@ -108,7 +108,7 @@ impl TypeChecker {
                     );
                     let truthy = self.block(&if_.truthy);
                     if let Some(falsy) = &if_.falsy {
-                        let falsy = self.block(falsy);
+                        let falsy = self.expression(falsy);
                         TypeInference::unify(&truthy, &falsy);
                     } else {
                         TypeInference::unify(&truthy, &Rc::new(RefCell::new(TypeInference::Never)));

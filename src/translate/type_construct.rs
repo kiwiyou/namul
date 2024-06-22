@@ -105,7 +105,7 @@ impl TypeConstructor {
                     self.expression(&if_.condition);
                     self.block(&if_.truthy);
                     if let Some(falsy) = &if_.falsy {
-                        self.block(falsy);
+                        self.expression(falsy);
                     }
                     self.stack.truncate(len);
                 }
