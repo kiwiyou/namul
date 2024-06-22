@@ -101,8 +101,8 @@ impl TypeInference {
         use TypeInference::*;
         let unified = match (&*a.borrow(), &*b.borrow()) {
             (Error, _) | (_, Error) => Error,
-            (Never, _) | (_, Never) => Never,
             (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
+            (Never, always @ _) | (always @ _, Never) => always.clone(),
             (Tuple(aargs), Tuple(bargs)) => {
                 if aargs.len() != bargs.len() {
                     Error
@@ -289,7 +289,9 @@ impl Scope {
         if let Some(var) = self.var.get_mut(name) {
             var.is_global = true;
         } else {
-            self.parent.as_ref().map(|p| p.borrow_mut().mark_global(name));
+            self.parent
+                .as_ref()
+                .map(|p| p.borrow_mut().mark_global(name));
         }
     }
 
