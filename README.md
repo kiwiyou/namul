@@ -74,14 +74,12 @@ Of course, you don't need to define your function before its call.
 
 ## Others
 
-Read $N$ numbers, count occurrences of $v$.
+Read `N` numbers, count occurrences of `v`.
+You can read into slices.
 ```namul
 |i32 N|
 [i32; 100] A;
-rep i, N {
-    |A[i]|
-}
-|i32 v|
+|A[0..N], i32 v|
 i32 count = 0;
 rep i, N {
     count += A[i] == v ? 1 : 0;
