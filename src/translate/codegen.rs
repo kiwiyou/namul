@@ -9,7 +9,7 @@ use crate::syntax::{
     expression::{
         Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
         CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeArray, MakeTuple,
-        NonblockExpression, Place, Print, Return, Select,
+        NonblockExpression, Place, Print, Range, Return, Select,
     },
     format::FormatFragment,
     literal::Literal,
@@ -50,7 +50,7 @@ pub struct Intermediate {
 impl Codegen {
     pub fn synthesize(&mut self, inference: &TypeInference) -> Option<TypeInstance> {
         match inference {
-            TypeInference::Exact(exact) => Some(exact.clone()),
+            TypeInference::Simple(exact) => Some(exact.clone()),
             TypeInference::Integer => Some(TypeInstance::I32),
             TypeInference::Never => Some(TypeInstance::Never),
             TypeInference::Unknown => None,
@@ -110,6 +110,25 @@ impl Codegen {
                     writeln!(self.decl, "typedef struct {0} {0};", instance.mapped()).unwrap();
                     writeln!(self.structs, "struct {} {{", instance.mapped()).unwrap();
                     writeln!(self.structs, "{} v[{len}];", element.mapped()).unwrap();
+                    writeln!(self.structs, "}};").unwrap();
+                }
+                Some(instance)
+            }
+            TypeInference::Range { end } => {
+                let end = self.synthesize(&end.borrow())?;
+                let mut instance = TypeInstance::Range {
+                    id: 0,
+                    end: Box::new(end.clone()),
+                };
+                let last_id = self.type_id.len();
+                let new = *self.type_id.entry(instance.id_removed()).or_insert(last_id);
+                if let TypeInstance::Range { id, .. } = &mut instance {
+                    *id = new;
+                }
+                if self.type_id.len() > last_id {
+                    writeln!(self.decl, "typedef struct {0} {0};", instance.mapped()).unwrap();
+                    writeln!(self.structs, "struct {} {{", instance.mapped()).unwrap();
+                    writeln!(self.structs, "{} l, r;", end.mapped()).unwrap();
                     writeln!(self.structs, "}};").unwrap();
                 }
                 Some(instance)
@@ -900,6 +919,7 @@ impl Codegen {
                 }
                 NonblockExpression::Index(index) => self.index(index),
                 NonblockExpression::Return(return_) => self.return_(return_),
+                NonblockExpression::Range(range) => self.range(range),
             },
         }
     }
@@ -1504,6 +1524,52 @@ impl Codegen {
                 effect: "return;".into(),
                 immediate: "".into(),
             }
+        }
+    }
+
+    fn range(&mut self, range: &Range) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let mut decl = String::new();
+        let mut globals = String::new();
+        let mut funcs = String::new();
+        let mut effect = String::new();
+        let ty_mapped = ty.mapped();
+        let mut construct = String::new();
+        let mt_id = self.var_id;
+        self.var_id += 1;
+        write!(construct, "{ty_mapped} r{mt_id} = {{").unwrap();
+        let arg = self.expression(&range.begin);
+        decl.push_str(&arg.decl);
+        globals.push_str(&arg.globals);
+        funcs.push_str(&arg.funcs);
+        effect.push_str(&arg.effect);
+        construct.push_str(&arg.immediate);
+        construct.push_str(", ");
+        let arg = self.expression(&range.end);
+        decl.push_str(&arg.decl);
+        globals.push_str(&arg.globals);
+        funcs.push_str(&arg.funcs);
+        effect.push_str(&arg.effect);
+        construct.push_str(&arg.immediate);
+        construct.push_str(", ");
+        writeln!(construct, "}};").unwrap();
+        let immediate = if ty != TypeInstance::Never {
+            effect.push_str(&construct);
+            format!("r{mt_id}")
+        } else {
+            "".into()
+        };
+        Intermediate {
+            ty,
+            decl,
+            globals,
+            funcs,
+            effect,
+            immediate,
         }
     }
 }

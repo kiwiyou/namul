@@ -32,6 +32,10 @@ pub enum TypeInstance {
         element: Box<TypeInstance>,
         len: usize,
     },
+    Range {
+        id: usize,
+        end: Box<TypeInstance>,
+    },
 }
 
 impl TypeInstance {
@@ -65,6 +69,11 @@ impl TypeInstance {
                 element.remove_id(out);
                 writeln!(out, "${len}").unwrap();
             }
+            Range { end, .. } => {
+                out.push_str("7[");
+                end.remove_id(out);
+                out.push(']');
+            }
         }
     }
 
@@ -77,7 +86,7 @@ impl TypeInstance {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeInference {
-    Exact(TypeInstance),
+    Simple(TypeInstance),
     Tuple(Vec<Rc<RefCell<TypeInference>>>),
     Integer,
     Unknown,
@@ -91,6 +100,9 @@ pub enum TypeInference {
         element: Rc<RefCell<TypeInference>>,
         len: usize,
     },
+    Range {
+        end: Rc<RefCell<TypeInference>>,
+    },
 }
 
 impl TypeInference {
@@ -103,6 +115,12 @@ impl TypeInference {
             (Error, _) | (_, Error) => Error,
             (Unknown, known @ _) | (known @ _, Unknown) => known.clone(),
             (Never, always @ _) | (always @ _, Never) => always.clone(),
+            (Simple(TypeInstance::I32), Integer) | (Integer, Simple(TypeInstance::I32)) => {
+                Simple(TypeInstance::I32)
+            }
+            (Simple(TypeInstance::I64), Integer) | (Integer, Simple(TypeInstance::I64)) => {
+                Simple(TypeInstance::I64)
+            }
             (Tuple(aargs), Tuple(bargs)) => {
                 if aargs.len() != bargs.len() {
                     Error
@@ -129,12 +147,6 @@ impl TypeInference {
                     Self::unify(aelem, belem);
                     a.borrow().clone()
                 }
-            }
-            (Exact(TypeInstance::I32), Integer) | (Integer, Exact(TypeInstance::I32)) => {
-                Exact(TypeInstance::I32)
-            }
-            (Exact(TypeInstance::I64), Integer) | (Integer, Exact(TypeInstance::I64)) => {
-                Exact(TypeInstance::I64)
             }
             (
                 Function {
@@ -168,6 +180,10 @@ impl TypeInference {
                         }
                     }
                 }
+            }
+            (Range { end: lend }, Range { end: rend }) => {
+                Self::unify(lend, rend);
+                lend.borrow().clone()
             }
             _ if a == b => return,
             _ => Error,
@@ -212,6 +228,13 @@ impl Display for TypeInstance {
                 len.fmt(f)?;
                 f.write_str("]")
             }
+            TypeInstance::Range { end, .. } => {
+                f.write_str("<")?;
+                end.fmt(f)?;
+                f.write_str("..")?;
+                end.fmt(f)?;
+                f.write_str(">")
+            }
         }
     }
 }
@@ -221,11 +244,12 @@ impl TypeInstance {
         match self {
             TypeInstance::I32 => "int32_t".into(),
             TypeInstance::Bool => "char".into(),
-            TypeInstance::Tuple { id, .. } => format!("T{id}"),
+            TypeInstance::Tuple { id, .. }
+            | TypeInstance::Array { id, .. }
+            | TypeInstance::Range { id, .. } => format!("T{id}"),
             TypeInstance::I64 => "int64_t".into(),
             TypeInstance::Function { .. } => format!("void"),
             TypeInstance::Never => "void".into(),
-            TypeInstance::Array { id, .. } => format!("T{id}"),
         }
     }
 
@@ -246,15 +270,15 @@ impl Scope {
         let mut ty = HashMap::new();
         ty.insert(
             "i32".into(),
-            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::I32))),
+            Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::I32))),
         );
         ty.insert(
             "i64".into(),
-            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::I64))),
+            Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::I64))),
         );
         ty.insert(
             "bool".into(),
-            Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+            Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
         );
         Self {
             parent: None,

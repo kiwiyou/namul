@@ -238,6 +238,10 @@ impl TypeConstructor {
                         self.expression(value)
                     }
                 }
+                NonblockExpression::Range(range) => {
+                    self.expression(&range.begin);
+                    self.expression(&range.end);
+                }
             },
         };
     }
@@ -293,6 +297,7 @@ impl TypeConstructor {
                 element: self.construct_type(scope, &array.element),
                 len: array.len,
             })),
+            Type::Auto => Rc::new(RefCell::new(TypeInference::Unknown)),
         };
         ans
     }

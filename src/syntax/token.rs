@@ -62,6 +62,8 @@ pub enum TokenKind {
     PunctAmpersand,
     PunctVerticalLineEqualsSign,
     PunctAmpersandEqualsSign,
+    PunctFullStopFullStop,
+    PunctFullStopFullStopEqualsSign,
 }
 
 fn token<T: Into<String>>(kind: TokenKind) -> impl Fn((T, Range<usize>)) -> Token {
@@ -93,6 +95,12 @@ pub fn parse_token(s: &mut Located<&str>) -> PResult<Token> {
 
 pub fn parse_punct(s: &mut Located<&str>) -> PResult<Token> {
     alt([
+        literal("..=")
+            .with_span()
+            .map(token(TokenKind::PunctFullStopFullStopEqualsSign)),
+        literal("..")
+            .with_span()
+            .map(token(TokenKind::PunctFullStopFullStop)),
         literal("+=")
             .with_span()
             .map(token(TokenKind::PunctPlusSignEqualsSign)),

@@ -104,7 +104,7 @@ impl TypeChecker {
                     let condition = self.expression(&if_.condition);
                     TypeInference::unify(
                         &condition,
-                        &Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+                        &Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
                     );
                     let truthy = self.block(&if_.truthy);
                     if let Some(falsy) = &if_.falsy {
@@ -125,7 +125,7 @@ impl TypeChecker {
                     Literal::Bool(_) => {
                         TypeInference::unify(
                             &ty,
-                            &Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+                            &Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
                         );
                     }
                 },
@@ -154,7 +154,7 @@ impl TypeChecker {
                     }
                     TypeInference::unify(
                         &ty,
-                        &Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+                        &Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
                     );
                 }
                 NonblockExpression::Print(print) => {
@@ -171,7 +171,7 @@ impl TypeChecker {
                     let inside = self.stack.len();
                     TypeInference::unify(
                         &condition,
-                        &Rc::new(RefCell::new(TypeInference::Exact(TypeInstance::Bool))),
+                        &Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
                     );
                     let truthy = self.expression(&select.truthy);
                     self.stack.truncate(inside);
@@ -302,6 +302,15 @@ impl TypeChecker {
                         self.expression(&value);
                     }
                     TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Never)));
+                }
+                NonblockExpression::Range(range) => {
+                    let begin = self.expression(&range.begin);
+                    let end = self.expression(&range.end);
+                    TypeInference::unify(&begin, &end);
+                    TypeInference::unify(
+                        &ty,
+                        &Rc::new(RefCell::new(TypeInference::Range { end: begin })),
+                    );
                 }
             },
         };

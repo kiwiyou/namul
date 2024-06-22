@@ -21,6 +21,7 @@ pub enum Type {
     Path(TypePath),
     Tuple(Vec<Self>),
     Array(Array),
+    Auto,
 }
 
 pub fn parse_type(s: &mut Located<&str>) -> PResult<Type> {
@@ -28,6 +29,7 @@ pub fn parse_type(s: &mut Located<&str>) -> PResult<Type> {
         parse_type_path.map(Type::Path),
         parse_tuple.map(Type::Tuple),
         parse_array.map(Type::Array),
+        TokenKind::PunctQuestionMark.value(Type::Auto),
     ))
     .parse_next(s)
 }

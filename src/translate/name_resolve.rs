@@ -213,6 +213,10 @@ impl NameResolver {
                         parent
                     }
                 }
+                NonblockExpression::Range(range) => {
+                    let scope = self.expression(parent, &range.begin);
+                    self.expression(scope, &range.end)
+                }
             },
         }
     }

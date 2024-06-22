@@ -35,6 +35,7 @@ pub enum NonblockExpression {
     CompoundAssignment(CompoundAssignment),
     Index(Index),
     Return(Return),
+    Range(Range),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
@@ -311,7 +312,7 @@ pub struct Comparison {
 }
 
 pub fn parse_comparison(s: &mut Located<&str>) -> PResult<NonblockExpression> {
-    let first = parse_bitwise.parse_next(s)?;
+    let first = parse_range.parse_next(s)?;
     let Ok(chain) = repeat(
         1..,
         seq!(
@@ -325,7 +326,7 @@ pub fn parse_comparison(s: &mut Located<&str>) -> PResult<NonblockExpression> {
                 TokenKind::PunctGreaterThanSignEqualsSign,
             )),
             _: opt(TokenKind::White),
-            parse_bitwise.map(Expression::Nonblock),
+            parse_range.map(Expression::Nonblock),
         ),
     )
     .parse_next(s) else {
@@ -714,4 +715,29 @@ pub fn parse_make_array(s: &mut Located<&str>) -> PResult<MakeArray> {
     )
     .map(|args| MakeArray { args })
     .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Range {
+    pub begin: Box<Expression>,
+    pub end: Box<Expression>,
+}
+
+pub fn parse_range(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_bitwise.parse_next(s)?;
+    let Ok(end) = preceded(
+        (
+            opt(TokenKind::White),
+            TokenKind::PunctFullStopFullStop,
+            opt(TokenKind::White),
+        ),
+        parse_bitwise,
+    )
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    Ok(NonblockExpression::Range(Range {
+        begin: Box::new(Expression::Nonblock(first)),
+        end: Box::new(Expression::Nonblock(end)),
+    }))
 }
