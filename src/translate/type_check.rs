@@ -261,18 +261,22 @@ impl TypeChecker {
                             let index = self.expression(&index.index);
                             self.stack.truncate(len);
                             let target_ty = target.borrow();
+                            let index_ty = index.borrow();
                             match &*target_ty {
-                                TypeInference::Array { element, .. } => {
-                                    TypeInference::unify(
-                                        &index,
-                                        &Rc::new(RefCell::new(TypeInference::Integer)),
-                                    );
-                                    TypeInference::unify(&ty, &element);
+                                TypeInference::Array { element, .. }
+                                | TypeInference::Slice { element } => match &*index_ty {
+                                    TypeInference::Integer
+                                    | TypeInference::Simple(TypeInstance::I32)
+                                    | TypeInference::Simple(TypeInstance::I64) => {
+                                        TypeInference::unify(&ty, &element);
+                                    }
+                                    _ => {
+                                        ty.replace(TypeInference::Error);
+                                    }
+                                },
+                                _ => {
+                                    ty.replace(TypeInference::Error);
                                 }
-                                _ => TypeInference::unify(
-                                    &ty,
-                                    &Rc::new(RefCell::new(TypeInference::Error)),
-                                ),
                             }
                         }
                     }
@@ -281,19 +285,37 @@ impl TypeChecker {
                 NonblockExpression::Index(index) => {
                     let len = self.stack.len();
                     let target = self.expression(&index.target);
-                    let idx = self.expression(&index.index);
+                    let index = self.expression(&index.index);
                     self.stack.truncate(len);
                     let target_ty = target.borrow();
+                    let index_ty = index.borrow();
                     match &*target_ty {
-                        TypeInference::Array { element, .. } => {
-                            TypeInference::unify(
-                                &idx,
-                                &Rc::new(RefCell::new(TypeInference::Integer)),
-                            );
-                            TypeInference::unify(&ty, &element);
+                        TypeInference::Array { element, .. } | TypeInference::Slice { element } => {
+                            match &*index_ty {
+                                TypeInference::Integer
+                                | TypeInference::Simple(TypeInstance::I32)
+                                | TypeInference::Simple(TypeInstance::I64) => {
+                                    TypeInference::unify(&ty, &element);
+                                }
+                                TypeInference::Range { end } => {
+                                    TypeInference::unify(
+                                        end,
+                                        &Rc::new(RefCell::new(TypeInference::Integer)),
+                                    );
+                                    TypeInference::unify(
+                                        &ty,
+                                        &Rc::new(RefCell::new(TypeInference::Slice {
+                                            element: Rc::clone(&element),
+                                        })),
+                                    );
+                                }
+                                _ => {
+                                    ty.replace(TypeInference::Error);
+                                }
+                            }
                         }
                         _ => {
-                            TypeInference::unify(&ty, &Rc::new(RefCell::new(TypeInference::Error)));
+                            ty.replace(TypeInference::Error);
                         }
                     }
                 }
@@ -396,13 +418,15 @@ impl TypeChecker {
                 let index = self.expression(&index.index);
                 self.stack.truncate(len);
                 let target_ty = target.borrow();
+                let index_ty = index.borrow();
                 match &*target_ty {
-                    TypeInference::Array { element, .. } => {
-                        TypeInference::unify(
-                            &index,
-                            &Rc::new(RefCell::new(TypeInference::Integer)),
-                        );
-                        Rc::clone(&element)
+                    TypeInference::Array { element, .. } | TypeInference::Slice { element } => {
+                        match &*index_ty {
+                            TypeInference::Integer
+                            | TypeInference::Simple(TypeInstance::I32)
+                            | TypeInference::Simple(TypeInstance::I64) => Rc::clone(&element),
+                            _ => Rc::new(RefCell::new(TypeInference::Error)),
+                        }
                     }
                     _ => Rc::new(RefCell::new(TypeInference::Error)),
                 }

@@ -36,6 +36,10 @@ pub enum TypeInstance {
         id: usize,
         end: Box<TypeInstance>,
     },
+    Slice {
+        id: usize,
+        element: Box<TypeInstance>,
+    },
 }
 
 impl TypeInstance {
@@ -74,6 +78,10 @@ impl TypeInstance {
                 end.remove_id(out);
                 out.push(']');
             }
+            Slice { element, .. } => {
+                element.remove_id(out);
+                writeln!(out, "$?").unwrap();
+            }
         }
     }
 
@@ -103,6 +111,9 @@ pub enum TypeInference {
     Range {
         end: Rc<RefCell<TypeInference>>,
     },
+    Slice {
+        element: Rc<RefCell<TypeInference>>,
+    },
 }
 
 impl TypeInference {
@@ -129,6 +140,17 @@ impl TypeInference {
                         Self::unify(aarg, barg);
                     }
                     a.borrow().clone()
+                }
+            }
+            (Slice { element: l }, Slice { element: r }) => {
+                TypeInference::unify(l, r);
+                a.borrow().clone()
+            }
+            (Slice { element: model }, Array { element: other, .. })
+            | (Array { element: other, .. }, Slice { element: model }) => {
+                Self::unify(model, other);
+                Slice {
+                    element: Rc::clone(model),
                 }
             }
             (
@@ -235,6 +257,11 @@ impl Display for TypeInstance {
                 end.fmt(f)?;
                 f.write_str(">")
             }
+            TypeInstance::Slice { element, .. } => {
+                f.write_str("[")?;
+                element.fmt(f)?;
+                f.write_str("]")
+            }
         }
     }
 }
@@ -246,7 +273,8 @@ impl TypeInstance {
             TypeInstance::Bool => "char".into(),
             TypeInstance::Tuple { id, .. }
             | TypeInstance::Array { id, .. }
-            | TypeInstance::Range { id, .. } => format!("T{id}"),
+            | TypeInstance::Range { id, .. }
+            | TypeInstance::Slice { id, .. } => format!("T{id}"),
             TypeInstance::I64 => "int64_t".into(),
             TypeInstance::Function { .. } => format!("void"),
             TypeInstance::Never => "void".into(),

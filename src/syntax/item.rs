@@ -21,6 +21,7 @@ pub enum Type {
     Path(TypePath),
     Tuple(Vec<Self>),
     Array(Array),
+    Slice(Slice),
     Auto,
 }
 
@@ -28,6 +29,7 @@ pub fn parse_type(s: &mut Located<&str>) -> PResult<Type> {
     alt((
         parse_type_path.map(Type::Path),
         parse_tuple.map(Type::Tuple),
+        parse_slice.map(Type::Slice),
         parse_array.map(Type::Array),
         TokenKind::PunctQuestionMark.value(Type::Auto),
     ))
@@ -73,6 +75,23 @@ fn parse_array(s: &mut Located<&str>) -> PResult<Array> {
     .map(|(element, len)| Array {
         element: Box::new(element),
         len,
+    })
+    .parse_next(s)
+}
+
+#[derive(Debug, Clone)]
+pub struct Slice {
+    pub element: Box<Type>,
+}
+
+fn parse_slice(s: &mut Located<&str>) -> PResult<Slice> {
+    delimited(
+        (TokenKind::PunctLeftSquareBracket, opt(TokenKind::White)),
+        parse_type,
+        (opt(TokenKind::White), TokenKind::PunctRightSquareBracket),
+    )
+    .map(|element| Slice {
+        element: Box::new(element),
     })
     .parse_next(s)
 }

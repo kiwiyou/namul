@@ -133,6 +133,25 @@ impl Codegen {
                 }
                 Some(instance)
             }
+            TypeInference::Slice { element } => {
+                let element = self.synthesize(&element.borrow())?;
+                let mut instance = TypeInstance::Slice {
+                    id: 0,
+                    element: Box::new(element.clone()),
+                };
+                let last_id = self.type_id.len();
+                let new = *self.type_id.entry(instance.id_removed()).or_insert(last_id);
+                if let TypeInstance::Slice { id, .. } = &mut instance {
+                    *id = new;
+                }
+                if self.type_id.len() > last_id {
+                    writeln!(self.decl, "typedef struct {0} {0};", instance.mapped()).unwrap();
+                    writeln!(self.structs, "struct {} {{", instance.mapped()).unwrap();
+                    writeln!(self.structs, "{} *v, *e;", element.mapped()).unwrap();
+                    writeln!(self.structs, "}};").unwrap();
+                }
+                Some(instance)
+            }
         }
     }
 
@@ -1250,15 +1269,25 @@ impl Codegen {
                 globals.push_str(&idx.globals);
                 effect.push_str(&idx.effect);
                 self.stack.truncate(len);
-                let TypeInstance::Array { element, .. } = target.ty else {
-                    panic!("Could not index into type `{}`.", target.ty);
-                };
-                self.assign_var(
-                    effect,
-                    &element,
-                    &format!("{}.v[{}]", target.immediate, idx.immediate),
-                    &immediate,
-                );
+                match &target.ty {
+                    TypeInstance::Array { element, .. } | TypeInstance::Slice { element, .. } => {
+                        match &idx.ty {
+                            TypeInstance::I32 | TypeInstance::I64 => {
+                                self.assign_var(
+                                    effect,
+                                    &element,
+                                    &format!("{}.v[{}]", target.immediate, idx.immediate),
+                                    &immediate,
+                                );
+                            }
+                            _ => panic!(
+                                "Could not index-assign type `{}` with type `{}`.",
+                                target.ty, idx.ty
+                            ),
+                        }
+                    }
+                    _ => panic!("Could not index into type `{}`.", target.ty),
+                }
             }
         }
     }
@@ -1332,30 +1361,34 @@ impl Codegen {
                 globals.push_str(&target.globals);
                 funcs.push_str(&target.funcs);
                 effect.push_str(&target.effect);
-                let index = self.expression(&index.index);
-                decl.push_str(&index.decl);
-                globals.push_str(&index.globals);
-                funcs.push_str(&index.funcs);
-                effect.push_str(&index.effect);
+                let idx = self.expression(&index.index);
+                decl.push_str(&idx.decl);
+                globals.push_str(&idx.globals);
+                funcs.push_str(&idx.funcs);
+                effect.push_str(&idx.effect);
                 self.stack.truncate(len);
-                let TypeInstance::Array { element, .. } = target.ty else {
-                    panic!("Could not index into type `{}`.", target.ty);
-                };
-                let getter = match &*element {
-                    TypeInstance::I32 | TypeInstance::I64 => {
-                        self.feature.insert("reader_def");
-                        self.feature.insert("read_white");
-                        self.feature.insert("read_int");
-                        "read_int()"
+                match &target.ty {
+                    TypeInstance::Array { element, .. } | TypeInstance::Slice { element, .. } => {
+                        match &idx.ty {
+                            TypeInstance::I32 | TypeInstance::I64 => {
+                                self.feature.insert("reader_def");
+                                self.feature.insert("read_white");
+                                self.feature.insert("read_int");
+                                self.assign_var(
+                                    effect,
+                                    &element,
+                                    &format!("{}.v[{}]", target.immediate, idx.immediate),
+                                    &"read_int()",
+                                );
+                            }
+                            _ => panic!(
+                                "Could not index-assign type `{}` with type `{}`.",
+                                target.ty, idx.ty
+                            ),
+                        }
                     }
-                    _ => panic!("Could not find parser for type `{element}`."),
-                };
-                self.assign_var(
-                    effect,
-                    &element,
-                    &format!("{}.v[{}]", target.immediate, index.immediate),
-                    &getter,
-                );
+                    _ => panic!("Could not index into type `{}`.", target.ty),
+                }
             }
         }
     }
@@ -1417,32 +1450,45 @@ impl Codegen {
                 globals.push_str(&target.globals);
                 funcs.push_str(&target.funcs);
                 effect.push_str(&target.effect);
-                let index = self.expression(&index.index);
-                decl.push_str(&index.decl);
-                globals.push_str(&index.globals);
-                funcs.push_str(&index.funcs);
-                effect.push_str(&index.effect);
+                let idx = self.expression(&index.index);
+                decl.push_str(&idx.decl);
+                globals.push_str(&idx.globals);
+                funcs.push_str(&idx.funcs);
+                effect.push_str(&idx.effect);
                 self.stack.truncate(len);
-                let TypeInstance::Array { element, .. } = target.ty else {
-                    panic!("Could not index into type `{}`.", target.ty);
-                };
-                match (&*element, compound.op.kind, &rhs.ty) {
-                    (
-                        TypeInstance::I32 | TypeInstance::I64,
-                        _,
-                        TypeInstance::I32 | TypeInstance::I64,
-                    ) => {
-                        writeln!(
-                            effect,
-                            "{}.v[{}] {} {};",
-                            target.immediate, index.immediate, compound.op.content, rhs.immediate
-                        )
-                        .unwrap();
+                match &target.ty {
+                    TypeInstance::Array { element, .. } | TypeInstance::Slice { element, .. } => {
+                        match &idx.ty {
+                            TypeInstance::I32 | TypeInstance::I64 => {
+                                match (&**element, compound.op.kind, &rhs.ty) {
+                                    (
+                                        TypeInstance::I32 | TypeInstance::I64,
+                                        _,
+                                        TypeInstance::I32 | TypeInstance::I64,
+                                    ) => {
+                                        writeln!(
+                                            effect,
+                                            "{}.v[{}] {} {};",
+                                            target.immediate,
+                                            idx.immediate,
+                                            compound.op.content,
+                                            rhs.immediate
+                                        )
+                                        .unwrap();
+                                    }
+                                    _ => panic!(
+                                        "Could not assign type `{}` to type `{element}` using `{}`.",
+                                        rhs.ty, compound.op.content
+                                    ),
+                                }
+                            }
+                            _ => panic!(
+                                "Could not index-assign type `{}` with type `{}`.",
+                                target.ty, idx.ty
+                            ),
+                        }
                     }
-                    _ => panic!(
-                        "Could not assign type `{}` to type `{element}` using `{}`.",
-                        rhs.ty, compound.op.content
-                    ),
+                    _ => panic!("Could not index into type `{}`.", target.ty),
                 }
             }
         }
@@ -1486,18 +1532,43 @@ impl Codegen {
         funcs.push_str(&index.funcs);
         effect.push_str(&index.effect);
         self.stack.truncate(len);
-        let immediate = if ty != TypeInstance::Never {
-            format!("{}.v[{}]", target.immediate, index.immediate)
-        } else {
-            "".into()
+        let immediate = match &target.ty {
+            TypeInstance::Array { .. } | TypeInstance::Slice { .. } => match &index.ty {
+                TypeInstance::I32 | TypeInstance::I64 => {
+                    format!("{}.v[{}]", target.immediate, index.immediate)
+                }
+                TypeInstance::Range { .. } => {
+                    let id = self.var_id;
+                    self.var_id += 1;
+                    self.define_var(
+                        &mut effect,
+                        &ty,
+                        &format!("idx{id}"),
+                        &format!(
+                            "{{&{}.v[{}.l], &{0}.v[{1}.r] }}",
+                            target.immediate, index.immediate
+                        ),
+                    );
+                    format!("idx{id}")
+                }
+                _ => panic!(
+                    "Could not index type `{}` with type `{}`.",
+                    target.ty, index.ty
+                ),
+            },
+            _ => panic!("Could not index into type `{}`.", target.ty),
         };
         Intermediate {
+            immediate: if ty == TypeInstance::Never {
+                "".into()
+            } else {
+                immediate
+            },
             ty,
             decl,
             globals,
             funcs,
             effect,
-            immediate,
         }
     }
 

@@ -298,6 +298,9 @@ impl TypeConstructor {
                 len: array.len,
             })),
             Type::Auto => Rc::new(RefCell::new(TypeInference::Unknown)),
+            Type::Slice(slice) => Rc::new(RefCell::new(TypeInference::Slice {
+                element: self.construct_type(scope, &slice.element),
+            })),
         };
         ans
     }
