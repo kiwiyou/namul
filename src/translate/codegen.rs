@@ -201,7 +201,7 @@ impl Codegen {
         let mut immediate = String::new();
         match (lhs.ty, binary.operator.kind, rhs.ty) {
             (
-                TypeInstance::I32 | TypeInstance::I64,
+                TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                 TokenKind::PunctPlusSign
                 | TokenKind::PunctHyphenMinus
                 | TokenKind::PunctAsterisk
@@ -209,7 +209,7 @@ impl Codegen {
                 | TokenKind::PunctPercentSign
                 | TokenKind::PunctVerticalLine
                 | TokenKind::PunctAmpersand,
-                TypeInstance::I32 | TypeInstance::I64,
+                TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
             )
             | (
                 TypeInstance::Bool,
@@ -324,9 +324,9 @@ impl Codegen {
                     is_never = true;
                 }
                 (
-                    TypeInstance::I32 | TypeInstance::I64,
+                    TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                     _,
-                    TypeInstance::I32 | TypeInstance::I64,
+                    TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                 ) => {
                     if i == 0 {
                         write!(effect, "char ").unwrap();
@@ -383,6 +383,34 @@ impl Codegen {
         }
     }
 
+    pub fn print_typed(&mut self, effect: &mut String, ty: &TypeInstance, value: &str) {
+        match ty {
+            TypeInstance::Array { element, len, .. } => match &**element {
+                TypeInstance::Char => {
+                    self.feature.insert("write_literal");
+                    writeln!(effect, "write_literal({value}.v, {len});").unwrap();
+                }
+                _ => panic!("Could not print value of type `{}`.", ty),
+            },
+            TypeInstance::Slice { element, .. } => match &**element {
+                TypeInstance::Char => {
+                    self.feature.insert("write_literal");
+                    writeln!(effect, "write_literal({value}.v, {value}.e - {value}.v);").unwrap();
+                }
+                _ => panic!("Could not print value of type `{}`.", ty),
+            },
+            TypeInstance::I32 | TypeInstance::I64 => {
+                self.feature.insert("write_int");
+                writeln!(effect, "write_int({value});").unwrap();
+            }
+            TypeInstance::Char => {
+                self.feature.insert("write_char");
+                writeln!(effect, "write_char({value});").unwrap();
+            }
+            _ => panic!("Could not print value of type `{}`.", ty),
+        }
+    }
+
     pub fn print(&mut self, print: &Print) -> Intermediate {
         let current_infer = Rc::clone(&self.inference[self.last_infer]);
         let Some(ty) = self.synthesize(&current_infer.borrow()) else {
@@ -425,16 +453,10 @@ impl Codegen {
                     let Some(var_ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    match var_ty {
-                        TypeInstance::I32 | TypeInstance::I64 => {
-                            self.feature.insert("write_int");
-                            if var.is_global {
-                                writeln!(effect, "write_int(*g{});", var.var.mangle).unwrap();
-                            } else {
-                                writeln!(effect, "write_int({});", var.var.mangle).unwrap();
-                            }
-                        }
-                        _ => panic!("Could not print value of type `{}`.", ty),
+                    if var.is_global {
+                        self.print_typed(&mut effect, &var_ty, &format!("*g{}", var.var.mangle));
+                    } else {
+                        self.print_typed(&mut effect, &var_ty, &var.var.mangle);
                     }
                 }
                 FormatFragment::Placeholder(index) => {
@@ -455,14 +477,8 @@ impl Codegen {
                             immediates.len()
                         );
                     };
+                    self.print_typed(&mut effect, &ty, &arg);
                     *used = true;
-                    match &*ty {
-                        TypeInstance::I32 | TypeInstance::I64 => {
-                            self.feature.insert("write_int");
-                            writeln!(effect, "write_int({});", arg).unwrap();
-                        }
-                        _ => panic!("Could not print value of type `{}`.", ty),
-                    }
                 }
             }
         }
@@ -986,6 +1002,9 @@ impl Codegen {
         if translator.feature.contains("write_int") {
             out.push_str(include_str!("fragments/write_int.c"));
         }
+        if translator.feature.contains("write_char") {
+            out.push_str(include_str!("fragments/write_char.c"));
+        }
         writeln!(out, "_Noreturn void halt() {{").unwrap();
         if translator.feature.contains("writer_def") {
             writeln!(out, "flush();").unwrap();
@@ -1000,6 +1019,12 @@ impl Codegen {
         }
         if translator.feature.contains("read_int") {
             out.push_str(include_str!("fragments/read_int.c"));
+        }
+        if translator.feature.contains("read_char") {
+            out.push_str(include_str!("fragments/read_char.c"));
+        }
+        if translator.feature.contains("read_str") {
+            out.push_str(include_str!("fragments/read_str.c"));
         }
         out.push_str(&translator.decl);
         out.push_str(&intermediate.decl);
@@ -1304,10 +1329,13 @@ impl Codegen {
     ) {
         match ty {
             TypeInstance::I32 | TypeInstance::I64 => {
-                self.feature.insert("reader_def");
                 self.feature.insert("read_white");
                 self.feature.insert("read_int");
                 writeln!(effect, "{lhs} = read_int();").unwrap();
+            }
+            TypeInstance::Char => {
+                self.feature.insert("read_char");
+                writeln!(effect, "{lhs} = read_char();").unwrap();
             }
             TypeInstance::Array { element, len, .. } => {
                 let id = self.var_id;
@@ -1316,18 +1344,25 @@ impl Codegen {
                 self.assign_input(globals, funcs, effect, element, &format!("{lhs}.v[i{id}]"));
                 writeln!(effect, "}}").unwrap();
             }
-            TypeInstance::Slice { element, .. } => {
-                let id = self.var_id;
-                self.var_id += 1;
-                writeln!(
-                    effect,
-                    "for ({} *i{id} = {lhs}.v; i{id} < {lhs}.e; ++i{id}) {{",
-                    element.mapped()
-                )
-                .unwrap();
-                self.assign_input(globals, funcs, effect, element, &format!("(*i{id})"));
-                writeln!(effect, "}}").unwrap();
-            }
+            TypeInstance::Slice { element, .. } => match &**element {
+                TypeInstance::Char => {
+                    self.feature.insert("read_white");
+                    self.feature.insert("read_str");
+                    writeln!(effect, "{lhs}.e = read_str({lhs}.v, {lhs}.e);").unwrap();
+                }
+                _ => {
+                    let id = self.var_id;
+                    self.var_id += 1;
+                    writeln!(
+                        effect,
+                        "for ({} *i{id} = {lhs}.v; i{id} < {lhs}.e; ++i{id}) {{",
+                        element.mapped()
+                    )
+                    .unwrap();
+                    self.assign_input(globals, funcs, effect, element, &format!("(*i{id})"));
+                    writeln!(effect, "}}").unwrap();
+                }
+            },
             _ => panic!("Could not find parser for type `{ty}`."),
         };
     }
@@ -1340,6 +1375,7 @@ impl Codegen {
         effect: &mut String,
         assignee: &Assignee,
     ) {
+        self.feature.insert("reader_def");
         let scope = Rc::clone(&self.stack.last().unwrap());
         match assignee {
             Assignee::Declaration(declaration) => {
@@ -1368,19 +1404,16 @@ impl Codegen {
                     let Some(ty) = self.synthesize(&var.var.ty.borrow()) else {
                         panic!("Could not deduce type.");
                     };
-                    let getter = match ty {
-                        TypeInstance::I32 | TypeInstance::I64 => {
-                            self.feature.insert("reader_def");
-                            self.feature.insert("read_white");
-                            self.feature.insert("read_int");
-                            "read_int()"
-                        }
-                        _ => panic!("Could not find parser for type `{ty}`."),
-                    };
                     if var.is_global {
-                        self.assign_var(effect, &ty, &format!("*g{}", var.var.mangle), &getter);
+                        self.assign_input(
+                            globals,
+                            funcs,
+                            effect,
+                            &ty,
+                            &format!("*g{}", var.var.mangle),
+                        );
                     } else {
-                        self.assign_var(effect, &ty, &var.var.mangle, &getter);
+                        self.assign_input(globals, funcs, effect, &ty, &var.var.mangle);
                     }
                 }
             },
@@ -1463,9 +1496,9 @@ impl Codegen {
                     };
                     match (&ty, compound.op.kind, &rhs.ty) {
                         (
-                            TypeInstance::I32 | TypeInstance::I64,
+                            TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                             _,
-                            TypeInstance::I32 | TypeInstance::I64,
+                            TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                         ) => {
                             if var.is_global {
                                 writeln!(
@@ -1506,12 +1539,12 @@ impl Codegen {
                 match &target.ty {
                     TypeInstance::Array { element, .. } | TypeInstance::Slice { element, .. } => {
                         match &idx.ty {
-                            TypeInstance::I32 | TypeInstance::I64 => {
+                            TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char => {
                                 match (&**element, compound.op.kind, &rhs.ty) {
                                     (
-                                        TypeInstance::I32 | TypeInstance::I64,
+                                        TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                                         _,
-                                        TypeInstance::I32 | TypeInstance::I64,
+                                        TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
                                     ) => {
                                         writeln!(
                                             effect,
@@ -1592,7 +1625,7 @@ impl Codegen {
                         &ty,
                         &format!("idx{id}"),
                         &format!(
-                            "{{&{}.v[{}.l], &{0}.v[{1}.r] }}",
+                            "{{&{}.v[{}.l], &{0}.v[{1}.r]}}",
                             target.immediate, index.immediate
                         ),
                     );
@@ -1698,15 +1731,31 @@ impl Codegen {
         };
         self.last_infer += 1;
         let mut value = self.expression(&cast.value);
-        let id = self.var_id;
-        self.var_id += 1;
-        self.define_var(
-            &mut value.effect,
-            &ty,
-            &format!("c{id}"),
-            &format!("({}){}", ty.mapped(), value.immediate),
-        );
-        value.immediate = format!("c{id}");
+        match (&value.ty, &ty) {
+            (TypeInstance::Slice { .. }, TypeInstance::I32) => {
+                let id = self.var_id;
+                self.var_id += 1;
+                self.define_var(
+                    &mut value.effect,
+                    &ty,
+                    &format!("c{id}"),
+                    &format!("{}.e - {0}.v", value.immediate),
+                );
+                value.immediate = format!("c{id}");
+            }
+            _ => {
+                let id = self.var_id;
+                self.var_id += 1;
+                self.define_var(
+                    &mut value.effect,
+                    &ty,
+                    &format!("c{id}"),
+                    &format!("({}){}", ty.mapped(), value.immediate),
+                );
+                value.immediate = format!("c{id}");
+            }
+        }
+        value.ty = ty;
         value
     }
 }

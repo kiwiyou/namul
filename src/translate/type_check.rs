@@ -270,9 +270,10 @@ impl TypeChecker {
                                 TypeInference::Array { element, .. }
                                 | TypeInference::Slice { element } => match &*index_ty {
                                     TypeInference::Integer
-                                    | TypeInference::Simple(TypeInstance::I32)
-                                    | TypeInference::Simple(TypeInstance::I64) => {
-                                        TypeInference::unify(&ty, &element);
+                                    | TypeInference::Simple(
+                                        TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
+                                    ) => {
+                                        TypeInference::unify(&rhs, &element);
                                     }
                                     _ => {
                                         ty.replace(TypeInference::Error);
@@ -356,14 +357,25 @@ impl TypeChecker {
                         let infer = match (&*value.borrow(), &*into.borrow()) {
                             (
                                 TypeInference::Integer
-                                | TypeInference::Simple(TypeInstance::I32 | TypeInstance::I64),
+                                | TypeInference::Simple(
+                                    TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
+                                ),
                                 b @ (TypeInference::Integer
-                                | TypeInference::Simple(TypeInstance::I32 | TypeInstance::I64)),
+                                | TypeInference::Simple(
+                                    TypeInstance::I32 | TypeInstance::I64 | TypeInstance::Char,
+                                )),
+                            ) => b.clone(),
+                            (
+                                TypeInference::Slice { .. },
+                                b @ (TypeInference::Integer
+                                | TypeInference::Simple(TypeInstance::I32)),
                             ) => b.clone(),
                             (a @ _, b @ _) if a == b => b.clone(),
                             _ => TypeInference::Never,
                         };
                         TypeInference::unify(&ty, &Rc::new(RefCell::new(infer)));
+                    } else {
+                        TypeInference::unify(&ty, &into);
                     }
                 }
             },

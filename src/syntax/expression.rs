@@ -156,7 +156,7 @@ pub fn parse_bitwise(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     let first = parse_add_sub.parse_next(s)?;
     let Ok((op, rhs)) = seq!(
         _: opt(TokenKind::White),
-        alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand)),
+        alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand, TokenKind::PunctCircumflexAccent)),
         _: opt(TokenKind::White),
         parse_add_sub,
     )
@@ -172,7 +172,7 @@ pub fn parse_bitwise(s: &mut Located<&str>) -> PResult<NonblockExpression> {
         0..,
         seq!(
             _: opt(TokenKind::White),
-            alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand)),
+            alt((TokenKind::PunctVerticalLine, TokenKind::PunctAmpersand, TokenKind::PunctCircumflexAccent)),
             _: opt(TokenKind::White),
             parse_add_sub,
         ),
@@ -569,6 +569,7 @@ pub fn parse_compound_assignment(s: &mut Located<&str>) -> PResult<CompoundAssig
             TokenKind::PunctPercentSignEqualsSign,
             TokenKind::PunctVerticalLineEqualsSign,
             TokenKind::PunctAmpersandEqualsSign,
+            TokenKind::PunctCircumflexAccentEqualsSign,
         )),
         _: opt(TokenKind::White),
         parse_expression,

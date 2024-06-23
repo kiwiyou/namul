@@ -40,6 +40,7 @@ pub enum TypeInstance {
         id: usize,
         element: Box<TypeInstance>,
     },
+    Char,
 }
 
 impl TypeInstance {
@@ -82,6 +83,7 @@ impl TypeInstance {
                 element.remove_id(out);
                 writeln!(out, "$?").unwrap();
             }
+            Char => out.push('8'),
         }
     }
 
@@ -131,6 +133,9 @@ impl TypeInference {
             }
             (Simple(TypeInstance::I64), Integer) | (Integer, Simple(TypeInstance::I64)) => {
                 Simple(TypeInstance::I64)
+            }
+            (Simple(TypeInstance::Char), Integer) | (Integer, Simple(TypeInstance::Char)) => {
+                Simple(TypeInstance::Char)
             }
             (Tuple(aargs), Tuple(bargs)) => {
                 if aargs.len() != bargs.len() {
@@ -262,6 +267,7 @@ impl Display for TypeInstance {
                 element.fmt(f)?;
                 f.write_str("]")
             }
+            TypeInstance::Char => f.write_str("char"),
         }
     }
 }
@@ -270,7 +276,7 @@ impl TypeInstance {
     pub fn mapped(&self) -> String {
         match self {
             TypeInstance::I32 => "int32_t".into(),
-            TypeInstance::Bool => "char".into(),
+            TypeInstance::Bool | TypeInstance::Char => "char".into(),
             TypeInstance::Tuple { id, .. }
             | TypeInstance::Array { id, .. }
             | TypeInstance::Range { id, .. }
@@ -307,6 +313,10 @@ impl Scope {
         ty.insert(
             "bool".into(),
             Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Bool))),
+        );
+        ty.insert(
+            "char".into(),
+            Rc::new(RefCell::new(TypeInference::Simple(TypeInstance::Char))),
         );
         Self {
             parent: None,
