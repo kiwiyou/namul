@@ -16,6 +16,8 @@ pub struct TypeChecker {
     stack: Vec<Rc<RefCell<Scope>>>,
     block_stack: Vec<Rc<RefCell<Scope>>>,
     last: usize,
+    ty: Vec<Rc<RefCell<TypeInference>>>,
+    last_ty: usize,
 }
 
 impl TypeChecker {
@@ -25,6 +27,8 @@ impl TypeChecker {
             inference: vec![],
             stack: vec![],
             block_stack: vec![],
+            ty: constructor.user_ty,
+            last_ty: 0,
             last: 1usize,
         }
     }
@@ -343,6 +347,24 @@ impl TypeChecker {
                         &ty,
                         &Rc::new(RefCell::new(TypeInference::Range { end: begin })),
                     );
+                }
+                NonblockExpression::Cast(cast) => {
+                    let value = self.expression(&cast.value);
+                    let into = Rc::clone(&self.ty[self.last_ty]);
+                    self.last_ty += 1;
+                    if !Rc::ptr_eq(&value, &into) {
+                        let infer = match (&*value.borrow(), &*into.borrow()) {
+                            (
+                                TypeInference::Integer
+                                | TypeInference::Simple(TypeInstance::I32 | TypeInstance::I64),
+                                b @ (TypeInference::Integer
+                                | TypeInference::Simple(TypeInstance::I32 | TypeInstance::I64)),
+                            ) => b.clone(),
+                            (a @ _, b @ _) if a == b => b.clone(),
+                            _ => TypeInference::Never,
+                        };
+                        TypeInference::unify(&ty, &Rc::new(RefCell::new(infer)));
+                    }
                 }
             },
         };

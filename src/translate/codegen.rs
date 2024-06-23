@@ -7,7 +7,7 @@ use std::{
 
 use crate::syntax::{
     expression::{
-        Assignee, Assignment, BinaryOperation, Block, BlockExpression, Comparison,
+        Assignee, Assignment, BinaryOperation, Block, BlockExpression, Cast, Comparison,
         CompoundAssignment, Declaration, Expression, If, Index, Invocation, MakeArray, MakeTuple,
         NonblockExpression, Place, Print, Range, Return, Select,
     },
@@ -939,6 +939,7 @@ impl Codegen {
                 NonblockExpression::Index(index) => self.index(index),
                 NonblockExpression::Return(return_) => self.return_(return_),
                 NonblockExpression::Range(range) => self.range(range),
+                NonblockExpression::Cast(cast) => self.cast(cast),
             },
         }
     }
@@ -1688,6 +1689,25 @@ impl Codegen {
             effect,
             immediate,
         }
+    }
+
+    fn cast(&mut self, cast: &Cast) -> Intermediate {
+        let current_infer = Rc::clone(&self.inference[self.last_infer]);
+        let Some(ty) = self.synthesize(&current_infer.borrow()) else {
+            panic!("Could not deduce type.");
+        };
+        self.last_infer += 1;
+        let mut value = self.expression(&cast.value);
+        let id = self.var_id;
+        self.var_id += 1;
+        self.define_var(
+            &mut value.effect,
+            &ty,
+            &format!("c{id}"),
+            &format!("({}){}", ty.mapped(), value.immediate),
+        );
+        value.immediate = format!("c{id}");
+        value
     }
 }
 

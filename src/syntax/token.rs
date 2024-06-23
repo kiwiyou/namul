@@ -28,6 +28,7 @@ pub enum TokenKind {
     KeywordWhile,
     KeywordFn,
     KeywordReturn,
+    KeywordAs,
     PunctComma,
     PunctSemicolon,
     PunctVerticalLine,
@@ -240,6 +241,7 @@ pub fn parse_white(s: &mut Located<&str>) -> PResult<Token> {
 pub fn parse_keyword(s: &mut Located<&str>) -> PResult<Token> {
     alt((
         literal("if").with_span().map(token(TokenKind::KeywordIf)),
+        literal("as").with_span().map(token(TokenKind::KeywordAs)),
         literal("else")
             .with_span()
             .map(token(TokenKind::KeywordElse)),

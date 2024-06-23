@@ -68,7 +68,8 @@ impl NameResolver {
                 parent
             }
             Statement::While(while_) => {
-                let mut scope = Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), false)));
+                let mut scope =
+                    Rc::new(RefCell::new(Scope::with_parent(Rc::clone(&parent), false)));
                 self.scopes.push(Rc::clone(&scope));
                 scope = self.expression(scope, &while_.condition);
                 self.block(scope, &while_.block);
@@ -217,6 +218,7 @@ impl NameResolver {
                     let scope = self.expression(parent, &range.begin);
                     self.expression(scope, &range.end)
                 }
+                NonblockExpression::Cast(cast) => self.expression(parent, &cast.value),
             },
         }
     }

@@ -15,6 +15,7 @@ pub struct TypeConstructor {
     pub scopes: Vec<Rc<RefCell<Scope>>>,
     stack: Vec<Rc<RefCell<Scope>>>,
     block_stack: Vec<Rc<RefCell<Scope>>>,
+    pub user_ty: Vec<Rc<RefCell<TypeInference>>>,
     last: usize,
 }
 
@@ -24,6 +25,7 @@ impl TypeConstructor {
             scopes: resolver.scopes,
             stack: vec![],
             block_stack: vec![],
+            user_ty: vec![],
             last: 1usize,
         }
     }
@@ -241,6 +243,12 @@ impl TypeConstructor {
                 NonblockExpression::Range(range) => {
                     self.expression(&range.begin);
                     self.expression(&range.end);
+                }
+                NonblockExpression::Cast(cast) => {
+                    self.expression(&cast.value);
+                    let scope = Rc::clone(self.stack.last().unwrap());
+                    let ty = self.construct_type(&scope.borrow(), &cast.ty);
+                    self.user_ty.push(ty);
                 }
             },
         };

@@ -36,6 +36,7 @@ pub enum NonblockExpression {
     Index(Index),
     Return(Return),
     Range(Range),
+    Cast(Cast),
 }
 
 pub fn parse_nonblock_expression(s: &mut Located<&str>) -> PResult<NonblockExpression> {
@@ -226,13 +227,13 @@ pub fn parse_add_sub(s: &mut Located<&str>) -> PResult<NonblockExpression> {
 }
 
 pub fn parse_mul_div_mod(s: &mut Located<&str>) -> PResult<NonblockExpression> {
-    let first = parse_index.parse_next(s)?;
+    let first = parse_cast.parse_next(s)?;
 
     let Ok((op, rhs)) = seq!(
         _: opt(TokenKind::White),
         alt((TokenKind::PunctAsterisk, TokenKind::PunctSolidus, TokenKind::PunctPercentSign)),
         _: opt(TokenKind::White),
-        parse_index,
+        parse_cast,
     )
     .parse_next(s) else {
         return Ok(first);
@@ -739,5 +740,30 @@ pub fn parse_range(s: &mut Located<&str>) -> PResult<NonblockExpression> {
     Ok(NonblockExpression::Range(Range {
         begin: Box::new(Expression::Nonblock(first)),
         end: Box::new(Expression::Nonblock(end)),
+    }))
+}
+
+#[derive(Debug, Clone)]
+pub struct Cast {
+    pub value: Box<Expression>,
+    pub ty: Type,
+}
+
+pub fn parse_cast(s: &mut Located<&str>) -> PResult<NonblockExpression> {
+    let first = parse_index.parse_next(s)?;
+    let Ok(ty) = preceded(
+        (
+            opt(TokenKind::White),
+            TokenKind::KeywordAs,
+            opt(TokenKind::White),
+        ),
+        parse_type,
+    )
+    .parse_next(s) else {
+        return Ok(first);
+    };
+    Ok(NonblockExpression::Cast(Cast {
+        value: Box::new(Expression::Nonblock(first)),
+        ty,
     }))
 }
