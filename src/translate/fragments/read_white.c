@@ -1,10 +1,9 @@
 void read_white() {
-    for(;;) {
-        for (int i = reader->off; i < reader->end; ++i)
-            if (reader->buf[i] > ' ') {
-                reader->off = i;
-                return;
-            }
-        refill();
-    }
+    int c = -1;
+    while ((c = getchar()) != EOF)
+        if (c > ' ') {
+            ungetc(c, stdin);
+            break;
+        }
+    if (feof(stdin)) halt();
 }

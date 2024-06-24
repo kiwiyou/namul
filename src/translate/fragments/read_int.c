@@ -1,15 +1,12 @@
 int64_t read_int() {
     read_white();
-    if (reader->off == reader->end) refill();
-    int sign = reader->buf[reader->off] == '-';
-    reader->off += sign;
+    int c = getchar();
+    if (c == EOF) halt();
+    int sign = c == '-';
+    if (!sign) ungetc(c, stdin);
     uint64_t v = 0;
-    for(;;) {
-        for (int i = reader->off; i < reader->end; ++i)
-            if (reader->buf[i] < '0' || reader->buf[i] > '9') {
-                reader->off = i;
-                return sign ? -v : v;
-            } else v = reader->buf[i] - '0' + v * 10;
-        refill();
-    }
+    while ('0' <= (c = getchar()) && c <= '9')
+        v = v * 10 + (c - '0');
+    ungetc(c, stdin);
+    return sign ? -v : v;
 }

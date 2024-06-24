@@ -9,5 +9,7 @@ void write_int(int64_t v) {
         work /= 10;
     } while (work);
     if (sign) buf[--off] = '-';
-    fwrite(buf + off, 1, 32 - off, stdout);
+    if (writer->back + 32 - off > WRITER_BUF) flush();
+    for (int i = off; i < 32; ++i) writer->buf[writer->back + i - off] = buf[i];
+    writer->back += 32 - off;
 }

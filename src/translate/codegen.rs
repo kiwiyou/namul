@@ -23,7 +23,12 @@ use super::{
     TypeInference, TypeInstance,
 };
 
+pub struct CodegenOptions {
+    pub no_libc: bool,
+}
+
 pub struct Codegen {
+    options: CodegenOptions,
     feature: HashSet<&'static str>,
     scopes: Vec<Rc<RefCell<Scope>>>,
     inference: Vec<Rc<RefCell<TypeInference>>>,
@@ -960,7 +965,7 @@ impl Codegen {
         }
     }
 
-    pub fn translate(program: &Program) -> String {
+    pub fn translate(program: &Program, options: CodegenOptions) -> String {
         let name_resolver = NameResolver::new(program);
         let mut type_constructor = TypeConstructor::from_name_resolver(name_resolver);
         type_constructor.run(program);
@@ -968,6 +973,7 @@ impl Codegen {
         type_checker.run(program);
 
         let mut translator = Codegen {
+            options,
             feature: Default::default(),
             scopes: type_checker.scopes,
             inference: type_checker.inference,
@@ -988,60 +994,99 @@ impl Codegen {
 
         let mut out = String::new();
         writeln!(out, "// namul 0.0.0").unwrap();
-        writeln!(out, "#pragma GCC diagnostic ignored \"-Wmain\"").unwrap();
+        if translator.options.no_libc {
+            writeln!(out, "#pragma GCC diagnostic ignored \"-Wmain\"").unwrap();
+        }
         writeln!(out, "#pragma GCC diagnostic ignored \"-Wunused-variable\"").unwrap();
         writeln!(out, "#include <stdint.h>").unwrap();
         writeln!(out, "#include <unistd.h>").unwrap();
-        out.push_str(include_str!("fragments/builtins.c"));
-        if translator.feature.contains("writer_def") {
-            out.push_str(include_str!("fragments/writer_struct.c"));
-        }
-        if translator.feature.contains("write_literal") {
-            out.push_str(include_str!("fragments/write_literal.c"));
-        }
-        if translator.feature.contains("write_int") {
-            out.push_str(include_str!("fragments/write_int.c"));
-        }
-        if translator.feature.contains("write_char") {
-            out.push_str(include_str!("fragments/write_char.c"));
+        if !translator.options.no_libc {
+            writeln!(out, "#include <stdio.h>").unwrap();
         }
         writeln!(out, "_Noreturn void halt() {{").unwrap();
-        if translator.feature.contains("writer_def") {
-            writeln!(out, "flush();").unwrap();
+        if translator.options.no_libc {
+            if translator.feature.contains("writer_def") {
+                writeln!(out, "flush();").unwrap();
+            }
+        } else {
+            if translator.feature.contains("writer_def") {
+                writeln!(out, "fflush(stdout);").unwrap();
+            }
         }
         writeln!(out, "_exit(0);").unwrap();
         writeln!(out, "}}").unwrap();
-        if translator.feature.contains("reader_def") {
-            out.push_str(include_str!("fragments/reader_struct.c"));
-        }
-        if translator.feature.contains("read_white") {
-            out.push_str(include_str!("fragments/read_white.c"));
-        }
-        if translator.feature.contains("read_int") {
-            out.push_str(include_str!("fragments/read_int.c"));
-        }
-        if translator.feature.contains("read_char") {
-            out.push_str(include_str!("fragments/read_char.c"));
-        }
-        if translator.feature.contains("read_str") {
-            out.push_str(include_str!("fragments/read_str.c"));
+        if translator.options.no_libc {
+            out.push_str(include_str!("fragments/no_libc/builtins.c"));
+            if translator.feature.contains("writer_def") {
+                out.push_str(include_str!("fragments/no_libc/writer_struct.c"));
+            }
+            if translator.feature.contains("write_literal") {
+                out.push_str(include_str!("fragments/no_libc/write_literal.c"));
+            }
+            if translator.feature.contains("write_int") {
+                out.push_str(include_str!("fragments/no_libc/write_int.c"));
+            }
+            if translator.feature.contains("write_char") {
+                out.push_str(include_str!("fragments/no_libc/write_char.c"));
+            }
+            if translator.feature.contains("reader_def") {
+                out.push_str(include_str!("fragments/no_libc/reader_struct.c"));
+            }
+            if translator.feature.contains("read_white") {
+                out.push_str(include_str!("fragments/no_libc/read_white.c"));
+            }
+            if translator.feature.contains("read_int") {
+                out.push_str(include_str!("fragments/no_libc/read_int.c"));
+            }
+            if translator.feature.contains("read_char") {
+                out.push_str(include_str!("fragments/no_libc/read_char.c"));
+            }
+            if translator.feature.contains("read_str") {
+                out.push_str(include_str!("fragments/no_libc/read_str.c"));
+            }
+        } else {
+            if translator.feature.contains("write_literal") {
+                out.push_str(include_str!("fragments/write_literal.c"));
+            }
+            if translator.feature.contains("write_int") {
+                out.push_str(include_str!("fragments/write_int.c"));
+            }
+            if translator.feature.contains("write_char") {
+                out.push_str(include_str!("fragments/write_char.c"));
+            }
+            if translator.feature.contains("read_white") {
+                out.push_str(include_str!("fragments/read_white.c"));
+            }
+            if translator.feature.contains("read_int") {
+                out.push_str(include_str!("fragments/read_int.c"));
+            }
+            if translator.feature.contains("read_char") {
+                out.push_str(include_str!("fragments/read_char.c"));
+            }
+            if translator.feature.contains("read_str") {
+                out.push_str(include_str!("fragments/read_str.c"));
+            }
         }
         out.push_str(&translator.decl);
         out.push_str(&intermediate.decl);
         out.push_str(&translator.structs);
         out.push_str(&intermediate.globals);
         out.push_str(&intermediate.funcs);
-        writeln!(out, "int main;").unwrap();
-        writeln!(out, "int __libc_start_main() {{").unwrap();
-        if translator.feature.contains("writer_def") {
-            writeln!(out, "Writer w;").unwrap();
-            writeln!(out, "w.back = 0;").unwrap();
-            writeln!(out, "writer = &w;").unwrap();
-        }
-        if translator.feature.contains("reader_def") {
-            writeln!(out, "Reader r;").unwrap();
-            writeln!(out, "r.off = r.end = 0;").unwrap();
-            writeln!(out, "reader = &r;").unwrap();
+        if translator.options.no_libc {
+            writeln!(out, "int main;").unwrap();
+            writeln!(out, "int __libc_start_main() {{").unwrap();
+            if translator.feature.contains("writer_def") {
+                writeln!(out, "Writer w;").unwrap();
+                writeln!(out, "w.back = 0;").unwrap();
+                writeln!(out, "writer = &w;").unwrap();
+            }
+            if translator.feature.contains("reader_def") {
+                writeln!(out, "Reader r;").unwrap();
+                writeln!(out, "r.off = r.end = 0;").unwrap();
+                writeln!(out, "reader = &r;").unwrap();
+            }
+        } else {
+            writeln!(out, "int main() {{").unwrap();
         }
         out.push_str(&intermediate.effect);
         writeln!(out, "halt();").unwrap();
@@ -1336,6 +1381,11 @@ impl Codegen {
             TypeInstance::Char => {
                 self.feature.insert("read_char");
                 writeln!(effect, "{lhs} = read_char();").unwrap();
+            }
+            TypeInstance::Tuple { args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    self.assign_input(globals, funcs, effect, arg, &format!("{lhs}.m{i}"));
+                }
             }
             TypeInstance::Array { element, len, .. } => {
                 let id = self.var_id;
